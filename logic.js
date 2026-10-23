@@ -1,0 +1,87 @@
+// Respostas automáticas da FAST SHOP 24H
+import { rpc } from './db.js';
+
+const SITE = process.env.SITE_URL || 'https://fast-shop-24h.netlify.app';
+const mt = (n) => `${Number(n || 0).toLocaleString('pt-PT', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} MT`;
+const ESTADO = { pendente: '⏳ Pendente (a aguardar pagamento)', pago: '✅ Pago', enviado: '🚀 Enviado', entregue: '🎉 Entregue', cancelado: '❌ Cancelado' };
+const REF_RE = /\bFS24-\d{8}-[A-Z0-9]{4}\b/i;
+
+let infoCache = { t: 0, v: null };
+async function info() {
+  if (Date.now() - infoCache.t > 5 * 60_000 || !infoCache.v) infoCache = { t: Date.now(), v: await rpc('bot_info') };
+  return infoCache.v || {};
+}
+
+const MENU = (nome) => `Olá${nome ? ' ' + nome : ''}! 👋 Bem-vindo à *FAST SHOP 24H* ⚡
+
+Responde com o número:
+*1* – Ver pacotes e preços
+*2* – Como pagar (M-Pesa / e-Mola)
+*3* – Estado dos meus pedidos
+*4* – Confirmar pagamento
+*5* – Falar com o suporte
+
+🛒 Encomendar: ${SITE}`;
+
+const norm = (t) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+
+export async function responder(texto, phone, nome) {
+  const t = norm(texto);
+  const refMatch = texto.toUpperCase().match(REF_RE);
+
+  // "FS24-20261023-AB12 8ABC12XYZ" -> confirmar pagamento
+  if (refMatch) {
+    const ref = refMatch[0];
+    const resto = texto.toUpperCase().replace(ref, ' ').replace(/[^A-Z0-9.]/g, ' ').trim().split(/\s+/).filter((w) => w.length >= 6);
+    const txid = resto.sort((a, b) => b.length - a.length)[0];
+    if (!txid) return `Recebi o pedido *${ref}*. Agora envia o ID da transação do SMS de pagamento, assim:\n*${ref} ID-DA-TRANSAÇÃO*`;
+    const r = await rpc('bot_submit_reference', { p_phone: phone, p_order_ref: ref, p_txid: txid });
+    if (!r?.ok) {
+      if (r?.erro === 'pedido_nao_encontrado') return `Não encontrei o pedido *${ref}* associado a este número. Confirma a referência ou fala com o suporte (*5*).`;
+      if (r?.erro === 'id_curto') return 'Esse ID da transação parece curto demais. Copia o ID completo do SMS do M-Pesa/e-Mola.';
+      return 'Não consegui registar o pagamento agora. Tenta de novo daqui a pouco ou fala com o suporte (*5*).';
+    }
+    if (r.estado === 'confirmado') return `✅ Pagamento do pedido *${r.reference}* confirmado! Vamos processar já.`;
+    if (r.estado === 'pendente') return `📝 Registei o ID *${txid}* no pedido *${r.reference}* (${mt(r.total)}).\nAssim que o SMS do pagamento chegar, confirmo automaticamente e aviso aqui.`;
+    return `O pagamento do pedido *${r.reference}* já está: *${r.estado}*.`;
+  }
+
+  if (['1', 'pacotes', 'precos', 'preco', 'tabela', 'megas', 'produtos'].some((k) => t === k || t.startsWith(k + ' '))) {
+    const cat = await rpc('bot_catalog');
+    if (!cat?.length) return `De momento não há produtos disponíveis. Vê o site: ${SITE}`;
+    const porCat = new Map();
+    for (const p of cat) {
+      const c = p.cat || 'Outros';
+      if (!porCat.has(c)) porCat.set(c, []);
+      porCat.get(c).push(`• ${p.name} — *${mt(p.price)}*`);
+    }
+    let out = '📦 *Pacotes e preços*\n';
+    for (const [c, l] of porCat) out += `\n*${c}*\n${l.slice(0, 15).join('\n')}${l.length > 15 ? `\n…e mais ${l.length - 15}` : ''}\n`;
+    return (out + `\n🛒 Encomenda aqui: ${SITE}`).slice(0, 3800);
+  }
+
+  if (['2', 'pagar', 'pagamento', 'mpesa', 'm-pesa', 'emola', 'e-mola', 'como pagar'].some((k) => t === k || t.startsWith(k))) {
+    const i = await info();
+    return `💳 *Como pagar*\n\n${i.mpesa || 'M-Pesa: ver no site.'}\n\n${i.emola || ''}\n\nDepois de pagar, envia aqui a referência do pedido e o ID da transação:\n*FS24-XXXXXXXX-XXXX ID-DA-TRANSAÇÃO*`.trim();
+  }
+
+  if (['3', 'estado', 'pedido', 'pedidos', 'encomenda', 'encomendas', 'meus pedidos'].some((k) => t === k || t.startsWith(k))) {
+    const ords = await rpc('bot_my_orders', { p_phone: phone });
+    if (!ords?.length) return `Não encontrei pedidos com este número. Se usaste outro número no site, envia a referência do pedido (FS24-…).\n🛒 ${SITE}`;
+    return '🧾 *Os teus últimos pedidos*\n\n' + ords.map((o) => `*${o.reference}* — ${mt(o.total)}\n${ESTADO[o.status] || o.status}`).join('\n\n');
+  }
+
+  if (['4', 'confirmar', 'paguei', 'ja paguei', 'comprovativo'].some((k) => t === k || t.startsWith(k))) {
+    return 'Envia numa só mensagem a referência do pedido e o ID da transação do SMS, assim:\n*FS24-20261023-AB12 8ABC12XYZ*\n\nEu confirmo automaticamente quando o pagamento entrar. ⚡';
+  }
+
+  if (['5', 'suporte', 'ajuda', 'atendente', 'humano'].some((k) => t === k || t.startsWith(k))) {
+    const i = await info();
+    const tel = i.support_whatsapp || i.support_phone || '848033355';
+    return `👤 O suporte vai responder-te aqui em breve.\nHorário: todos os dias 08:30/09:00–22:30.\nContacto: ${tel}`;
+  }
+
+  return MENU(nome);
+}
+
+export const ehHumanoPedido = (texto) => /^(5|suporte|ajuda|atendente|humano)\b/i.test(norm(texto));
