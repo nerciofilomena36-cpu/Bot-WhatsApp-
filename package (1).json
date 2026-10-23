@@ -1,0 +1,15 @@
+{
+  "name": "fast-shop-bot",
+  "version": "1.0.0",
+  "description": "FAST SHOP 24H — bot WhatsApp: respostas automáticas e confirmação de pedidos",
+  "type": "module",
+  "main": "index.js",
+  "scripts": { "start": "node --no-warnings index.js" },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "express": "^5.1.0",
+    "pino": "^9.7.0",
+    "qrcode": "^1.5.4"
+  }
+}
