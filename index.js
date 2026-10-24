@@ -16,6 +16,8 @@ let sock = null;
 let pedirCodigo = null; // número para código de emparelhamento
 const pausa = new Map(); // jid -> até quando o bot fica calado (suporte humano / dono respondeu)
 const ultimaResp = new Map(); // anti-spam
+// Grupos onde o bot pode responder (vazio = todos). Ex.: BOT_GRUPOS=1203630xxxx@g.us,1203631yyyy@g.us
+const GRUPOS = (process.env.BOT_GRUPOS || '').split(',').map((x) => x.trim()).filter(Boolean);
 
 async function iniciar() {
   if (!configOk()) { st.estado = 'Falta configurar SUPABASE_URL, SUPABASE_ANON_KEY e BOT_SECRET'; return; }
@@ -58,24 +60,33 @@ async function iniciar() {
     for (const m of messages) {
       try {
         const jid = m.key.remoteJid || '';
-        if (!m.message || jid.endsWith('@g.us') || jid === 'status@broadcast' || jid.endsWith('@newsletter')) continue;
-        // Se tu (dono) responderes manualmente a um cliente, o bot fica calado 2 h com essa pessoa
-        if (m.key.fromMe) { if (!m.key.id?.startsWith('BOT')) pausa.set(jid, Date.now() + 2 * 3600_000); continue; }
+        if (!m.message || jid === 'status@broadcast' || jid.endsWith('@newsletter')) continue;
+        const grupo = jid.endsWith('@g.us');
+        if (grupo && GRUPOS.length && !GRUPOS.includes(jid)) continue;
         const msg = m.message;
-        const texto = msg.conversation || msg.extendedTextMessage?.text || msg.imageMessage?.caption || '';
+        const texto = msg.conversation || msg.extendedTextMessage?.text || msg.imageMessage?.caption || msg.videoMessage?.caption || '';
+        if (m.key.id?.startsWith('BOT')) continue; // mensagens do próprio bot
+        if (m.key.fromMe) {
+          // Privado: se tu (dono) responderes à mão, o bot fica calado 2 h com essa pessoa
+          if (!grupo) { pausa.set(jid, Date.now() + 2 * 3600_000); continue; }
+        }
         if (!texto.trim()) continue;
         const sempre = /FS24-\d{8}-[A-Z0-9]{4}/i.test(texto) || /^\s*[1-5]\s*$/.test(texto);
-        if ((pausa.get(jid) || 0) > Date.now() && !sempre) continue;
-        if (Date.now() - (ultimaResp.get(jid) || 0) < 1500) continue;
-        ultimaResp.set(jid, Date.now());
-        const phone = (m.key.senderPn || m.key.participantPn || jid).split('@')[0].split(':')[0];
-        const resposta = await responder(texto, phone, (m.pushName || '').split(' ')[0]);
+        if (!grupo && (pausa.get(jid) || 0) > Date.now() && !sempre) continue;
+        const quem = grupo ? (m.key.participant || jid) : jid;
+        if (Date.now() - (ultimaResp.get(quem) || 0) < 1500) continue;
+        const ctx = msg.extendedTextMessage?.contextInfo || msg.imageMessage?.contextInfo || {};
+        const meus = [s.user?.id, s.user?.lid].filter(Boolean).map((x) => x.split(':')[0].split('@')[0]);
+        const mencionado = grupo && [...(ctx.mentionedJid || []), ctx.participant || ''].some((x) => meus.includes(String(x).split(':')[0].split('@')[0]));
+        const phone = (grupo ? (m.key.participantPn || m.key.participant || '') : (m.key.senderPn || jid)).split('@')[0].split(':')[0];
+        const resposta = await responder(texto, phone, (m.pushName || '').split(' ')[0], { grupo, mencionado, botNumero: st.numero });
         if (resposta) {
-          await s.sendPresenceUpdate('composing', jid).catch(() => {});
-          await s.sendMessage(jid, { text: resposta }, { messageId: 'BOT' + Date.now().toString(16).toUpperCase() });
+          ultimaResp.set(quem, Date.now());
+          if (!grupo) await s.sendPresenceUpdate('composing', jid).catch(() => {});
+          await s.sendMessage(jid, { text: resposta }, { quoted: grupo ? m : undefined, messageId: 'BOT' + Date.now().toString(16).toUpperCase() });
           st.respostas++;
         }
-        if (ehHumanoPedido(texto)) pausa.set(jid, Date.now() + 2 * 3600_000);
+        if (!grupo && ehHumanoPedido(texto)) pausa.set(jid, Date.now() + 2 * 3600_000);
       } catch (e) { console.error('msg', e.message); }
     }
   });
