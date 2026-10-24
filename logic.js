@@ -23,11 +23,56 @@ Responde com o número:
 
 🛒 Encomendar: ${SITE}`;
 
+const MENU_GRUPO = (num) => `⚡ *FAST SHOP 24H* — escreve uma palavra
+
+*precos* – pacotes e preços
+*pagar* – como pagar
+*site* – link para encomendar
+*horario* – horário de atendimento
+*regras* – regras do grupo
+
+🔒 Pedidos, pagamentos e estado só no privado${num ? `: wa.me/${num}` : '.'}
+🛒 ${SITE}`;
+
+// Gatilhos editáveis no Supabase (tabela bot_gatilhos), atualizados a cada 1 minuto
+let gatCache = { t: 0, v: [] };
+async function gatilhos() {
+  if (Date.now() - gatCache.t > 60_000) {
+    try { gatCache = { t: Date.now(), v: (await rpc('bot_gatilhos_lista')) || [] }; } catch { gatCache.t = Date.now(); }
+  }
+  return gatCache.v;
+}
+async function achaGatilho(t, grupo, nome) {
+  for (const g of await gatilhos()) {
+    if (g.onde === (grupo ? 'privado' : 'grupo')) continue;
+    const k = norm(g.gatilho).replace(/^[!/.]/, '');
+    const m = t.replace(/^[!/.]/, '');
+    if (!k) continue;
+    const ok = g.modo === 'contem' ? m.includes(k) : m === k || m.startsWith(k + ' ');
+    if (ok) return String(g.resposta).replaceAll('{nome}', nome || '').replaceAll('{site}', SITE);
+  }
+  return null;
+}
+
 const norm = (t) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 
-export async function responder(texto, phone, nome) {
-  const t = norm(texto);
+export async function responder(texto, phone, nome, op = {}) {
+  texto = texto.replace(/@\d+/g, ' ').trim();
+  let t = norm(texto);
   const refMatch = texto.toUpperCase().match(REF_RE);
+
+  if (op.grupo) {
+    const g = await achaGatilho(t, true, nome);
+    if (g) return g;
+    const c = t.replace(/^[!/.]/, '');
+    if (refMatch || (['estado', 'pedido', 'pedidos', 'confirmar', 'paguei'].includes(c)))
+      return `🔒 ${nome || 'Olá'}, pagamentos e pedidos só no privado, para tua segurança.${op.botNumero ? ` Fala comigo aqui: wa.me/${op.botNumero}` : ''}`;
+    if (['precos', 'preco', 'pacotes', 'tabela', 'megas'].includes(c)) return responder('1', phone, nome);
+    if (['pagar', 'pagamento', 'mpesa', 'emola'].includes(c)) return responder('2', phone, nome);
+    if (['suporte', 'ajuda'].includes(c)) return responder('5', phone, nome);
+    if (['menu', 'comandos'].includes(c)) return MENU_GRUPO(op.botNumero);
+    return null; // no grupo, fica calado no resto
+  }
 
   // "FS24-20261023-AB12 8ABC12XYZ" -> confirmar pagamento
   if (refMatch) {
@@ -45,6 +90,10 @@ export async function responder(texto, phone, nome) {
     if (r.estado === 'pendente') return `📝 Registei o ID *${txid}* no pedido *${r.reference}* (${mt(r.total)}).\nAssim que o SMS do pagamento chegar, confirmo automaticamente e aviso aqui.`;
     return `O pagamento do pedido *${r.reference}* já está: *${r.estado}*.`;
   }
+
+  const gat = await achaGatilho(t, false, nome);
+  if (gat) return gat;
+  t = t.replace(/^[!/.]/, '');
 
   if (['1', 'pacotes', 'precos', 'preco', 'tabela', 'megas', 'produtos'].some((k) => t === k || t.startsWith(k + ' '))) {
     const cat = await rpc('bot_catalog');
