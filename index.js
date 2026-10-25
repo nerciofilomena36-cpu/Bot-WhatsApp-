@@ -6,6 +6,7 @@ import makeWASocket, { DisconnectReason, fetchLatestBaileysVersion, Browsers } f
 import { useSupabaseAuthState } from './auth.js';
 import { rpc, configOk } from './db.js';
 import { responder, ehHumanoPedido } from './logic.js';
+import { montarGeator, novoCodigo, paraMB, acordarFila, geatorEstado } from './geator.js';
 
 const PORT = process.env.PORT || 3000;
 const PAINEL_SENHA = process.env.PAINEL_SENHA || '';
@@ -129,6 +130,33 @@ async function iniciar(S) {
           //   no grupo -> muda só nesse grupo;  na conversa contigo mesmo -> muda o privado deste número
           const meusIds = [s.user?.id, s.user?.lid].filter(Boolean).map((x) => x.split(':')[0].split('@')[0]);
           const proprio = !grupo && meusIds.includes(jid.split('@')[0].split(':')[0]);
+          // ---- Entregas automáticas (app GEATOR BOT MOBILE) ----
+          if (proprio && /^[!.]\s*pairapp\b/i.test(bruto)) {
+            await env(`📲 Código para parear a app GEATOR BOT MOBILE:\n\n*${novoCodigo()}*\n\nNa app: Parear › escreve este código e na URL do GEATOR RENT põe:\n${URL_PUBLICA}\n\n(Válido 15 min, só 1 vez)`);
+            continue;
+          }
+          const me = bruto.match(/^!\s*enviar\s+(\+?[\d ]{9,16}?)\s+(\d+(?:[.,]\d+)?\s*(?:gb|g|mb|m)?)\s*$/i);
+          if (me) {
+            const num = me[1].replace(/\D/g, '').slice(-9); const mb = paraMB(me[2].replace(/\s/g, ''));
+            if (!/^8[45]\d{7}$/.test(num) || mb < 10) { await env('Escreve assim: !enviar 841234567 1024  (ou 1GB). Só números Vodacom 84/85.'); continue; }
+            const id = await rpc('geator_adicionar', { p_numero: num, p_mb: mb, p_avisar: proprio ? null : jid, p_pacote: `${mb}MB` });
+            acordarFila();
+            await env(`📲 Entrega #${id} na fila: *${mb} MB* → *${num}*. A app vai enviar já.`);
+            continue;
+          }
+          if (proprio && cmd === 'entregas') {
+            const L = await rpc('geator_lista').catch(() => []);
+            const ic = { pendente: '⏳', reservado: '📤', executando: '⚙️', entregue: '✅', falhou: '❌' };
+            await env('📦 Últimas entregas\n\n' + ((L || []).map((x) => `${ic[x.estado] || '•'} #${x.id} ${x.mb}MB → ${x.numero} (${x.estado})`).join('\n') || '(nenhuma)') + `\n\nApp: ${geatorEstado.visto && Date.now() - geatorEstado.visto < 120000 ? '🟢 online' : '🔴 offline'}`);
+            continue;
+          }
+          const mr = bruto.match(/^!\s*repetir\s+#?(\d+)\s*$/i);
+          if (proprio && mr) {
+            const ok = await rpc('geator_repetir', { p_id: Number(mr[1]) }).catch(() => false);
+            acordarFila();
+            await env(ok ? `🔁 Entrega #${mr[1]} voltou para a fila.` : `Não encontrei a entrega #${mr[1]} (ou já foi entregue).`);
+            continue;
+          }
           const mm = bruto.match(/^!\s*(tabela|pagamento|menu|obrigado)\b\s*([\s\S]*)$/i);
           if ((grupo || proprio) && mm) {
             const campo = mm[1].toLowerCase(); const valor = mm[2].trim();
@@ -158,7 +186,7 @@ async function iniciar(S) {
             continue;
           }
           if ((grupo || proprio) && cmd === 'comandos') {
-            await env('⚙️ Comandos do dono\n\n!tabela + texto → muda a tabela\n!pagamento + texto → muda o pagamento\n!menu + texto → muda a resposta ao oi/olá\n!obrigado + texto → muda a resposta ao obrigado\n(!tabela apagar, !pagamento apagar… volta ao original)\n\n!gatilho palavra + resposta (linha de baixo) → cria palavra nova\n!gatilho palavra apagar → apaga\n!listar → mostra o que mudaste\n!ativarbot / !desativarbot → liga/desliga o bot no grupo\n\nNo grupo muda só esse grupo. Na conversa contigo mesmo muda o privado.');
+            await env('⚙️ Comandos do dono\n\n!tabela + texto → muda a tabela\n!pagamento + texto → muda o pagamento\n!menu + texto → muda a resposta ao oi/olá\n!obrigado + texto → muda a resposta ao obrigado\n(!tabela apagar, !pagamento apagar… volta ao original)\n\n!gatilho palavra + resposta (linha de baixo) → cria palavra nova\n!gatilho palavra apagar → apaga\n!listar → mostra o que mudaste\n!ativarbot / !desativarbot → liga/desliga o bot no grupo\n\n📲 Entregas automáticas (app GEATOR)\n!pairapp → código para ligar a app\n!enviar 841234567 1GB → manda megas\n!entregas → ver últimas\n!repetir 12 → tenta de novo a #12\n\nNo grupo muda só esse grupo. Na conversa contigo mesmo muda o privado.');
             continue;
           }
         }
@@ -217,6 +245,17 @@ setInterval(enviarFila, 10_000);
 
 // ---------- Painel simples ----------
 const app = express();
+const URL_PUBLICA = (process.env.RENDER_EXTERNAL_URL || process.env.URL_PUBLICA || 'https://fast-shop-bot.onrender.com').replace(/\/$/, '');
+const semId = (x) => String(x || '').split(':')[0].split('@')[0];
+montarGeator(app, {
+  avisar: async (r, ok, msg) => {
+    const S = SESSOES.find((x) => x.st.estado === 'Conectado' && x.sock);
+    if (!S) return;
+    const id = () => ({ messageId: 'BOT' + Date.now().toString(16).toUpperCase() });
+    if (ok && r.avisar) await S.sock.sendMessage(r.avisar, { text: `✅ Enviámos *${r.mb} MB* para o número *${r.numero}*. Obrigado pela preferência! 🙏` }, id());
+    if (!ok) await S.sock.sendMessage(semId(S.sock.user?.id) + '@s.whatsapp.net', { text: `⚠️ Entrega #${r.id} falhou (${r.mb} MB → ${r.numero}).\n${msg || ''}\n\nPara tentar de novo: !repetir ${r.id}` }, id());
+  },
+});
 app.use(express.urlencoded({ extended: false }));
 const autorizado = (req) => !PAINEL_SENHA || req.query.senha === PAINEL_SENHA || req.body?.senha === PAINEL_SENHA;
 
@@ -243,6 +282,13 @@ ${S.grupos.has(g.id) ? '✅' : '⬜'} ${String(g.subject || g.id).replace(/[<>&"
   res.send(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="8">
 <body style="font-family:sans-serif;max-width:480px;margin:auto;padding:20px;background:#fff7f0">
 <h2 style="color:#FF6A00">⚡ FAST SHOP 24H — Bot WhatsApp</h2>${blocos}
+<div style="background:#fff;border-radius:12px;padding:14px;margin:14px 0;box-shadow:0 1px 4px #0002">
+<h3 style="margin:0 0 6px">📲 App GEATOR BOT MOBILE</h3>
+<p>Estado: <b>${geatorEstado.visto && Date.now() - geatorEstado.visto < 120000 ? '🟢 Ligada' : '🔴 Desligada'}</b> ${geatorEstado.dispositivo ? '· ' + geatorEstado.dispositivo.replace(/[<>&"]/g, '') : ''}</p>
+${geatorEstado.ultimo ? `<p>Última entrega pedida: ${geatorEstado.ultimo}</p>` : ''}
+${codigoApp && codigoApp.ate > Date.now() ? `<h3>Código: <span style="letter-spacing:2px">${codigoApp.c}</span></h3><p>URL do GEATOR RENT: <b>${URL_PUBLICA}</b></p>` : ''}
+<form method="post" action="/geator-codigo${q}">${h}<button style="padding:8px">Gerar código da app</button></form>
+</div>
 </body>`);
 });
 const volta = (req, res) => res.redirect('/' + (PAINEL_SENHA ? `?senha=${encodeURIComponent(req.body.senha || '')}` : ''));
@@ -263,6 +309,12 @@ app.post('/grupo', async (req, res) => {
     if (S.grupos.has(g)) S.grupos.delete(g); else S.grupos.add(g);
     await guardaGrupos(S).catch((e) => (S.st.erro = e.message));
   }
+  volta(req, res);
+});
+let codigoApp = null;
+app.post('/geator-codigo', (req, res) => {
+  if (!autorizado(req)) return res.sendStatus(401);
+  codigoApp = { c: novoCodigo(), ate: Date.now() + 15 * 60_000 };
   volta(req, res);
 });
 app.post('/sair', async (req, res) => {
