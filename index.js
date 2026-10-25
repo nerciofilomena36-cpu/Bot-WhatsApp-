@@ -6,7 +6,7 @@ import makeWASocket, { DisconnectReason, fetchLatestBaileysVersion, Browsers } f
 import { useSupabaseAuthState } from './auth.js';
 import { rpc, configOk } from './db.js';
 import { responder, ehHumanoPedido } from './logic.js';
-import { montarGeator, novoCodigo, paraMB, acordarFila, geatorEstado } from './geator.js';
+import { montarGeator, novoCodigo, paraMB, acordarFila, geatorEstado, listaCelulares, alterarCelular, alterarCartao, mbTexto } from './geator.js';
 
 const PORT = process.env.PORT || 3000;
 const PAINEL_SENHA = process.env.PAINEL_SENHA || '';
@@ -159,10 +159,30 @@ async function iniciar(S) {
             await env(`📲 Entrega #${id} na fila: *${mb} MB* → *${num}*. A app vai enviar já.`);
             continue;
           }
+          const txtCel = () => '📱 Celulares GEATOR\n\n' + (listaCelulares().map((c) => `${c.ativo ? '🚀' : c.online ? '🟢' : '🔴'} Celular ${c.ordem}: ${c.estado} · total ~${mbTexto(c.total)}\n` + c.cartoes.map((k) => `   ${k.ativo ? '🚀' : k.estado === 'Sem megas' ? '🪫' : k.ligado ? '💳' : '⛔'} Cartão ${k.k}: ${k.ligado ? mbTexto(k.mb) : 'desligado'}${k.semMegas ? ' (sem megas)' : ''}`).join('\n')).join('\n\n') || '(nenhum ligado)') + '\n\n!saldo 1 2 10GB → celular 1, cartão 2 tem 10GB\n!cartao 1 2 desligar / ligar\n!celular 1 pausar / ativar / remover';
           if (proprio && cmd === 'entregas') {
             const L = await rpc('geator_lista').catch(() => []);
             const ic = { pendente: '⏳', reservado: '📤', executando: '⚙️', entregue: '✅', falhou: '❌' };
-            await env('📦 Últimas entregas\n\n' + ((L || []).map((x) => `${ic[x.estado] || '•'} #${x.id} ${x.mb}MB → ${x.numero} (${x.estado})`).join('\n') || '(nenhuma)') + `\n\nApp: ${geatorEstado.visto && Date.now() - geatorEstado.visto < 120000 ? '🟢 online' : '🔴 offline'}`);
+            await env('📦 Últimas entregas\n\n' + ((L || []).map((x) => `${ic[x.estado] || '•'} #${x.id} ${x.mb}MB → ${x.numero} (${x.estado})`).join('\n') || '(nenhuma)') + '\n\n' + txtCel());
+            continue;
+          }
+          if (proprio && cmd === 'celulares') { await env(txtCel()); continue; }
+          const ms = bruto.match(/^!\s*saldo\s+(\d+)\s+([12])\s+(\d+(?:[.,]\d+)?\s*(?:gb|g|mb|m)?)\s*$/i);
+          if (proprio && ms) {
+            const ok = await alterarCartao(ms[1], ms[2], 'saldo', paraMB(ms[3].replace(/\s+/g, '')));
+            await env(ok ? '✅ Saldo guardado.\n\n' + txtCel() : `Não encontrei o Celular ${ms[1]}.`);
+            continue;
+          }
+          const mk = bruto.match(/^!\s*cart[aã]o\s+(\d+)\s+([12])\s+(ligar|desligar)\s*$/i);
+          if (proprio && mk) {
+            const ok = await alterarCartao(mk[1], mk[2], mk[3].toLowerCase());
+            await env(ok ? '✅ Feito.\n\n' + txtCel() : `Não encontrei o Celular ${mk[1]}.`);
+            continue;
+          }
+          const mc = bruto.match(/^!\s*celular\s+(\d+)\s+(ativar|reativar|pausar|remover)\s*$/i);
+          if (proprio && mc) {
+            const ok = await alterarCelular(mc[1], mc[2].toLowerCase() === 'ativar' ? 'reativar' : mc[2].toLowerCase());
+            await env(ok ? '✅ Feito.\n\n' + txtCel() : `Não encontrei o Celular ${mc[1]}.`);
             continue;
           }
           const mr = bruto.match(/^!\s*repetir\s+#?(\d+)\s*$/i);
@@ -201,7 +221,7 @@ async function iniciar(S) {
             continue;
           }
           if ((grupo || proprio) && cmd === 'comandos') {
-            await env('⚙️ Comandos do dono\n\n!tabela + texto → muda a tabela\n!pagamento + texto → muda o pagamento\n!menu + texto → muda a resposta ao oi/olá\n!obrigado + texto → muda a resposta ao obrigado\n(!tabela apagar, !pagamento apagar… volta ao original)\n\n!gatilho palavra + resposta (linha de baixo) → cria palavra nova\n!gatilho palavra apagar → apaga\n!listar → mostra o que mudaste\n!ativarbot / !desativarbot → liga/desliga o bot no grupo\n\n📲 Entregas automáticas (app GEATOR)\n!pairapp → código para ligar a app\n!enviar 841234567 1GB → manda megas\n!entregas → ver últimas\n!repetir 12 → tenta de novo a #12\n\nNo grupo muda só esse grupo. Na conversa contigo mesmo muda o privado.');
+            await env('⚙️ Comandos do dono\n\n!tabela + texto → muda a tabela\n!pagamento + texto → muda o pagamento\n!menu + texto → muda a resposta ao oi/olá\n!obrigado + texto → muda a resposta ao obrigado\n(!tabela apagar, !pagamento apagar… volta ao original)\n\n!gatilho palavra + resposta (linha de baixo) → cria palavra nova\n!gatilho palavra apagar → apaga\n!listar → mostra o que mudaste\n!ativarbot / !desativarbot → liga/desliga o bot no grupo\n\n📲 Entregas automáticas (app GEATOR)\n!pairapp → código para ligar a app\n!enviar 841234567 1GB → manda megas\n!entregas → ver últimas\n!repetir 12 → tenta de novo a #12\n!celulares → ver celulares e megas de cada cartão\n!saldo 1 2 10GB → define os megas do cartão 2 do celular 1\n!cartao 1 2 desligar / ligar\n!celular 1 ativar / pausar / remover\n\nNo grupo muda só esse grupo. Na conversa contigo mesmo muda o privado.');
             continue;
           }
         }
@@ -306,6 +326,7 @@ const app = express();
 const URL_PUBLICA = (process.env.RENDER_EXTERNAL_URL || process.env.URL_PUBLICA || 'https://fast-shop-bot.onrender.com').replace(/\/$/, '');
 const semId = (x) => String(x || '').split(':')[0].split('@')[0];
 montarGeator(app, {
+  avisarDono: async (text) => { const S = SESSOES.find((x) => x.st.estado === 'Conectado' && x.sock); if (S) await avisarDono(S, text); },
   avisar: async (r, ok, msg) => {
     const S = SESSOES.find((x) => x.st.estado === 'Conectado' && x.sock);
     if (!S) return;
@@ -337,15 +358,25 @@ ${(S.listaGrupos || []).map((g) => `<form method="post" action="/grupo${q}" styl
 ${S.grupos.has(g.id) ? '✅' : '⬜'} ${String(g.subject || g.id).replace(/[<>&"]/g, '')} <button style="padding:4px 8px">${S.grupos.has(g.id) ? 'Desativar' : 'Ativar'}</button></form>`).join('') || '<p>(a carregar grupos…)</p>'}
 <form method="post" action="/sair${q}" style="margin-top:12px">${h}<input type="hidden" name="s" value="${i}"><button>Desligar este número</button></form>`}
 </div>`; }).join('');
-  res.send(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="8">
+  res.send(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="20">
 <body style="font-family:sans-serif;max-width:480px;margin:auto;padding:20px;background:#fff7f0">
 <h2 style="color:#FF6A00">⚡ FAST SHOP 24H — Bot WhatsApp</h2>${blocos}
 <div style="background:#fff;border-radius:12px;padding:14px;margin:14px 0;box-shadow:0 1px 4px #0002">
-<h3 style="margin:0 0 6px">📲 App GEATOR BOT MOBILE</h3>
-<p>Estado: <b>${geatorEstado.visto && Date.now() - geatorEstado.visto < 120000 ? '🟢 Ligada' : '🔴 Desligada'}</b> ${geatorEstado.dispositivo ? '· ' + geatorEstado.dispositivo.replace(/[<>&"]/g, '') : ''}</p>
+<h3 style="margin:0 0 6px">📲 Celulares GEATOR (${listaCelulares().filter((c) => c.online).length} ligado(s) de ${listaCelulares().length})</h3>
+<p style="font-size:13px;color:#555">O bot envia pelo cartão com mais megas (🚀) e desconta cada entrega. Sem megas → salta para o próximo cartão ou celular.</p>
+${listaCelulares().map((c) => `<div style="border:1px solid #eee;border-radius:8px;padding:8px;margin:6px 0">
+<b>${c.ativo ? '🚀' : c.online ? '🟢' : '🔴'} Celular ${c.ordem}</b> ${c.dispositivo ? '· ' + c.dispositivo.replace(/[<>&"]/g, '') : ''}<br>
+Estado: <b>${c.estado}</b> · Total ~<b>${mbTexto(c.total)}</b> · ✅ ${c.ok} · ❌ ${c.falhas}${c.ultimo ? `<br><small>${c.ultimo.replace(/[<>&"]/g, '')}</small>` : ''}
+${c.cartoes.map((k) => `<form method="post" action="/cartao${q}" style="margin:6px 0;padding:6px;background:#fafafa;border-radius:6px">${h}<input type="hidden" name="c" value="${c.id}"><input type="hidden" name="k" value="${k.k}">
+${k.ativo ? '🚀' : k.semMegas ? '🪫' : k.ligado ? '💳' : '⛔'} <b>Cartão ${k.k}</b>: ${k.ligado ? mbTexto(k.mb) : 'desligado'} ${k.semMegas ? '(sem megas)' : ''}<br>
+<input name="mb" placeholder="ex: 10GB" style="width:80px;padding:4px"> <button name="a" value="saldo" style="padding:4px">Definir megas</button>
+<button name="a" value="${k.ligado ? 'desligar' : 'ligar'}" style="padding:4px">${k.ligado ? 'Desligar' : 'Ligar'}</button></form>`).join('')}
+<form method="post" action="/celular${q}" style="margin-top:6px">${h}<input type="hidden" name="c" value="${c.id}">
+${c.estado === 'Pausado' ? '<button name="a" value="reativar" style="padding:6px">Reativar</button>' : '<button name="a" value="pausar" style="padding:6px">Pausar</button>'}
+<button name="a" value="remover" style="padding:6px" onclick="return confirm('Remover este celular?')">Remover</button></form></div>`).join('') || '<p>(nenhum celular ligado ainda)</p>'}
 ${geatorEstado.ultimo ? `<p>Última entrega pedida: ${geatorEstado.ultimo}</p>` : ''}
 ${codigoApp && codigoApp.ate > Date.now() ? `<h3>Código: <span style="letter-spacing:2px">${codigoApp.c}</span></h3><p>URL do GEATOR RENT: <b>${URL_PUBLICA}</b></p>` : ''}
-<form method="post" action="/geator-codigo${q}">${h}<button style="padding:8px">Gerar código da app</button></form>
+<form method="post" action="/geator-codigo${q}">${h}<button style="padding:8px">Gerar código para ligar mais um celular</button></form>
 </div>
 </body>`);
 });
@@ -370,6 +401,18 @@ app.post('/grupo', async (req, res) => {
   volta(req, res);
 });
 let codigoApp = null;
+app.post('/cartao', async (req, res) => {
+  if (!autorizado(req)) return res.sendStatus(401);
+  const a = String(req.body.a || '');
+  if (a === 'saldo' && !/\d/.test(String(req.body.mb || ''))) return volta(req, res);
+  await alterarCartao(String(req.body.c || ''), Number(req.body.k), a, a === 'saldo' ? paraMB(String(req.body.mb || '').replace(/\s+/g, '')) : undefined).catch(() => {});
+  volta(req, res);
+});
+app.post('/celular', async (req, res) => {
+  if (!autorizado(req)) return res.sendStatus(401);
+  await alterarCelular(String(req.body.c || ''), String(req.body.a || '')).catch(() => {});
+  volta(req, res);
+});
 app.post('/geator-codigo', (req, res) => {
   if (!autorizado(req)) return res.sendStatus(401);
   codigoApp = { c: novoCodigo(), ate: Date.now() + 15 * 60_000 };
