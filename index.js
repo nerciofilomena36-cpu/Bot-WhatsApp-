@@ -69,6 +69,8 @@ async function iniciar(S) {
       st.estado = 'Conectado'; st.qr = null; st.codigo = null; st.erro = null;
       st.numero = (s.user?.id || '').split(':')[0].split('@')[0];
       console.log('WhatsApp conectado', st.numero);
+      const lerGrupos = () => s.groupFetchAllParticipating().then((r) => { S.listaGrupos = Object.values(r).map((g) => ({ id: g.id, subject: g.subject })).sort((a, b) => String(a.subject).localeCompare(String(b.subject))); }).catch(() => {});
+      setTimeout(lerGrupos, 3000); clearInterval(S.tGrupos); S.tGrupos = setInterval(lerGrupos, 10 * 60_000);
     }
     if (u.connection === 'close') {
       const code = u.lastDisconnect?.error?.output?.statusCode;
@@ -82,21 +84,23 @@ async function iniciar(S) {
   });
 
   s.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
     for (const m of messages) {
+      if (type !== 'notify' && !m.key?.fromMe) continue; // mensagens do dono podem vir como 'append'
       try {
         const jid = m.key.remoteJid || '';
         if (!m.message || jid === 'status@broadcast' || jid.endsWith('@newsletter')) continue;
         const grupo = jid.endsWith('@g.us');
         if (grupo && m.key.fromMe && !m.key.id?.startsWith('BOT')) {
-          const cmd = (msg.conversation || msg.extendedTextMessage?.text || '').trim().toLowerCase();
-          if (cmd === '!ativarbot' || cmd === '!desativarbot') {
-            if (cmd === '!ativarbot') S.grupos.add(jid); else S.grupos.delete(jid);
+          const cmd = (msg.conversation || msg.extendedTextMessage?.text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z]/g, '');
+          if (cmd === 'ativarbot' || cmd === 'desativarbot') {
+            if (cmd === 'ativarbot') S.grupos.add(jid); else S.grupos.delete(jid);
             await guardaGrupos(S).catch((e) => console.error('grupos', e.message));
-            await s.sendMessage(jid, { text: cmd === '!ativarbot' ? '✅ Bot ativado neste grupo.' : '⛔ Bot desativado neste grupo.' }, { messageId: 'BOT' + Date.now().toString(16).toUpperCase() });
+            console.log('grupo', cmd, jid);
+            await s.sendMessage(jid, { text: cmd === 'ativarbot' ? '✅ Bot ativado neste grupo.' : '⛔ Bot desativado neste grupo.' }, { messageId: 'BOT' + Date.now().toString(16).toUpperCase() });
             continue;
           }
         }
+        if (type !== 'notify') continue;
         if (grupo && !S.grupos.has(jid) && !GRUPOS_ENV.includes(jid)) continue;
         const msg = m.message;
         const texto = msg.conversation || msg.extendedTextMessage?.text || msg.imageMessage?.caption || msg.videoMessage?.caption || '';
@@ -170,7 +174,10 @@ ${st.estado !== 'Conectado' ? `
 <form method="post" action="/codigo${q}">${h}<input type="hidden" name="s" value="${i}">
 <input name="numero" value="${S.padrao}" style="padding:8px"> <button style="padding:8px">Gerar código</button></form>
 ${st.qr ? `<p>Ou lê este QR noutro telemóvel/ecrã:</p><img src="${st.qr}" width="220">` : ''}` : `
-<form method="post" action="/sair${q}">${h}<input type="hidden" name="s" value="${i}"><button>Desligar este número</button></form>`}
+<p><b>Grupos</b> (o bot só responde nos ativados):</p>
+${(S.listaGrupos || []).map((g) => `<form method="post" action="/grupo${q}" style="margin:4px 0">${h}<input type="hidden" name="s" value="${i}"><input type="hidden" name="g" value="${g.id}">
+${S.grupos.has(g.id) ? '✅' : '⬜'} ${String(g.subject || g.id).replace(/[<>&"]/g, '')} <button style="padding:4px 8px">${S.grupos.has(g.id) ? 'Desativar' : 'Ativar'}</button></form>`).join('') || '<p>(a carregar grupos…)</p>'}
+<form method="post" action="/sair${q}" style="margin-top:12px">${h}<input type="hidden" name="s" value="${i}"><button>Desligar este número</button></form>`}
 </div>`; }).join('');
   res.send(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="8">
 <body style="font-family:sans-serif;max-width:480px;margin:auto;padding:20px;background:#fff7f0">
@@ -186,6 +193,16 @@ app.post('/codigo', async (req, res) => {
   S.st.codigo = null;
   await iniciar(S).catch((e) => (S.st.erro = e.message));
   setTimeout(() => volta(req, res), 5000);
+});
+app.post('/grupo', async (req, res) => {
+  if (!autorizado(req)) return res.sendStatus(401);
+  const S = SESSOES[Number(req.body.s) || 0] || SESSOES[0];
+  const g = String(req.body.g || '');
+  if (g.endsWith('@g.us')) {
+    if (S.grupos.has(g)) S.grupos.delete(g); else S.grupos.add(g);
+    await guardaGrupos(S).catch((e) => (S.st.erro = e.message));
+  }
+  volta(req, res);
 });
 app.post('/sair', async (req, res) => {
   if (!autorizado(req)) return res.sendStatus(401);
