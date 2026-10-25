@@ -75,7 +75,7 @@ export async function responder(texto, phone, nome, op = {}) {
     if (refMatch || igual(t, ['paguei', 'ja paguei', 'confirmar', 'estado', 'meus pedidos']))
       return `🔒 ${nome || 'Olá'}, pagamentos e pedidos só no privado, para tua segurança.${op.botNumero ? ` Fala comigo aqui: wa.me/${op.botNumero}` : ''}`;
     if (igual(t, ['tabela', 'posso ter megas', 'ainda ha promocao'])) return responder('1', phone, nome, { tabela: op.tabela });
-    if (igual(t, ['pagamento'])) return responder('2', phone, nome, { pagamento: op.pagamento });
+    if (igual(t, ['pagamento'])) return op.pagamentoGrupo || responder('2', phone, nome, { pagamento: op.pagamento });
     if (igual(t, ['obrigado', 'obrigada'])) return responder('obrigado', phone, nome);
     return null; // no grupo, fica calado no resto
   }
