@@ -69,15 +69,14 @@ export async function responder(texto, phone, nome, op = {}) {
   const refMatch = texto.toUpperCase().match(REF_RE);
 
   if (op.grupo) {
+    // No grupo só respondem estas palavras EXATAS (mais os gatilhos do Supabase)
     const g = await achaGatilho(t, true, nome);
     if (g) return g;
-    const c = t.replace(/^[!/.]/, '');
-    if (refMatch || (['estado', 'pedido', 'pedidos', 'confirmar', 'paguei'].includes(c)))
+    if (refMatch || igual(t, ['paguei', 'ja paguei', 'confirmar', 'estado', 'meus pedidos']))
       return `🔒 ${nome || 'Olá'}, pagamentos e pedidos só no privado, para tua segurança.${op.botNumero ? ` Fala comigo aqui: wa.me/${op.botNumero}` : ''}`;
-    if (['precos', 'preco', 'pacotes', 'tabela', 'megas'].includes(c)) return responder('1', phone, nome);
-    if (['pagar', 'pagamento', 'mpesa', 'emola'].includes(c)) return responder('2', phone, nome);
-    if (['suporte', 'ajuda'].includes(c)) return responder('5', phone, nome);
-    if (['menu', 'comandos'].includes(c)) return MENU_GRUPO(op.botNumero);
+    if (igual(t, ['tabela', 'posso ter megas', 'ainda ha promocao'])) return responder('1', phone, nome, { tabela: op.tabela });
+    if (igual(t, ['pagamento'])) return responder('2', phone, nome, { pagamento: op.pagamento });
+    if (igual(t, ['obrigado', 'obrigada'])) return responder('obrigado', phone, nome);
     return null; // no grupo, fica calado no resto
   }
 
@@ -103,6 +102,7 @@ export async function responder(texto, phone, nome, op = {}) {
   t = t.replace(/^[!/.]/, '');
 
   if (igual(t, ['1', 'tabela', 'posso ter megas', 'ainda ha promocao'])) {
+    if (op.tabela) return op.tabela; // número com tabela própria
     const cat = await rpc('bot_catalog');
     if (!cat?.length) return `De momento não há produtos disponíveis. Vê o site: ${SITE}`;
     const porCat = new Map();
@@ -117,6 +117,7 @@ export async function responder(texto, phone, nome, op = {}) {
   }
 
   if (igual(t, ['2', 'pagamento'])) {
+    if (op.pagamento) return op.pagamento; // número com pagamento próprio
     const i = await info();
     return `💳 *Como pagar*\n\n${i.mpesa || 'M-Pesa: ver no site.'}\n\n${i.emola || ''}\n\nDepois de pagar, envia aqui a referência do pedido e o ID da transação:\n*FS24-XXXXXXXX-XXXX ID-DA-TRANSAÇÃO*`.trim();
   }
