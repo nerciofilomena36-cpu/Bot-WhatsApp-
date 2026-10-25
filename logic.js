@@ -54,6 +54,13 @@ async function achaGatilho(t, grupo, nome) {
   return null;
 }
 
+// Palavras que abrem o MENU no privado (editável no Render: BOT_MENU_PALAVRAS=oi,ola,menu,...)
+// Qualquer outra mensagem que não seja comando fica SEM resposta.
+const MENU_PALAVRAS = (process.env.BOT_MENU_PALAVRAS || 'oi,ola')
+  .split(',').map((x) => x.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()).filter(Boolean);
+// Comando só conta se a mensagem for EXATAMENTE a palavra (ignora pontuação no fim)
+const igual = (t, lista) => lista.includes(t.replace(/[!?.,;:\s]+$/g, '').trim());
+
 const norm = (t) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 
 export async function responder(texto, phone, nome, op = {}) {
@@ -95,7 +102,7 @@ export async function responder(texto, phone, nome, op = {}) {
   if (gat) return gat;
   t = t.replace(/^[!/.]/, '');
 
-  if (['1', 'pacotes', 'precos', 'preco', 'tabela', 'megas', 'produtos'].some((k) => t === k || t.startsWith(k + ' '))) {
+  if (igual(t, ['1', 'tabela', 'posso ter megas', 'ainda ha promocao'])) {
     const cat = await rpc('bot_catalog');
     if (!cat?.length) return `De momento não há produtos disponíveis. Vê o site: ${SITE}`;
     const porCat = new Map();
@@ -109,28 +116,29 @@ export async function responder(texto, phone, nome, op = {}) {
     return (out + `\n🛒 Encomenda aqui: ${SITE}`).slice(0, 3800);
   }
 
-  if (['2', 'pagar', 'pagamento', 'mpesa', 'm-pesa', 'emola', 'e-mola', 'como pagar'].some((k) => t === k || t.startsWith(k))) {
+  if (igual(t, ['2', 'pagamento'])) {
     const i = await info();
     return `💳 *Como pagar*\n\n${i.mpesa || 'M-Pesa: ver no site.'}\n\n${i.emola || ''}\n\nDepois de pagar, envia aqui a referência do pedido e o ID da transação:\n*FS24-XXXXXXXX-XXXX ID-DA-TRANSAÇÃO*`.trim();
   }
 
-  if (['3', 'estado', 'pedido', 'pedidos', 'encomenda', 'encomendas', 'meus pedidos'].some((k) => t === k || t.startsWith(k))) {
+  if (igual(t, ['3'])) {
     const ords = await rpc('bot_my_orders', { p_phone: phone });
     if (!ords?.length) return `Não encontrei pedidos com este número. Se usaste outro número no site, envia a referência do pedido (FS24-…).\n🛒 ${SITE}`;
     return '🧾 *Os teus últimos pedidos*\n\n' + ords.map((o) => `*${o.reference}* — ${mt(o.total)}\n${ESTADO[o.status] || o.status}`).join('\n\n');
   }
 
-  if (['4', 'confirmar', 'paguei', 'ja paguei', 'comprovativo'].some((k) => t === k || t.startsWith(k))) {
+  if (igual(t, ['4'])) {
     return 'Envia numa só mensagem a referência do pedido e o ID da transação do SMS, assim:\n*FS24-20261023-AB12 8ABC12XYZ*\n\nEu confirmo automaticamente quando o pagamento entrar. ⚡';
   }
 
-  if (['5', 'suporte', 'ajuda', 'atendente', 'humano'].some((k) => t === k || t.startsWith(k))) {
+  if (igual(t, ['5'])) {
     const i = await info();
     const tel = i.support_whatsapp || i.support_phone || '848033355';
     return `👤 O suporte vai responder-te aqui em breve.\nHorário: todos os dias 08:30/09:00–22:30.\nContacto: ${tel}`;
   }
 
-  return MENU(nome);
+  if (igual(t, MENU_PALAVRAS)) return MENU(nome);
+  return null; // qualquer outra palavra: o bot fica calado
 }
 
-export const ehHumanoPedido = (texto) => /^(5|suporte|ajuda|atendente|humano)\b/i.test(norm(texto));
+export const ehHumanoPedido = (texto) => /^5[!?.\s]*$/i.test(norm(texto));
