@@ -20,11 +20,15 @@ const TABELAS = [null, TABELA_2];
 // Formas de pagamento próprias do 2º número
 const PAGAMENTO_2 = "💳 *FORMAS DE PAGAMENTO* 🇲🇿\n\n📱 *M-Pesa: 852562445*\n👤 *MAURICIO JORGE MUHOLOVE*\n\n📲 *e-Mola: 876028401*\n👤 *MAURICIO JORGE MUHOLOVE*\n\n🏦 *BIM:* *1248240524*\n👤 *MAURICIO JORGE MUHOLOVE*";
 const PAGAMENTOS = [null, PAGAMENTO_2];
+// Pagamento mostrado NOS GRUPOS ativados do número principal (848033355)
+const PAGAMENTO_GRUPO_1 = "📩 COMO FAZER O PEDIDO\n\n1️⃣ Envie o texto da transferência\n2️⃣ Informe o número da Vodacom que irá receber o pacote.\n\n💳 PAGAMENTOS\n\n📱 M-Pesa - 848033355\n👤 Nercio \n\n📱 e-Mola - 869875020\n👤 Nercio Filomena \n\n\n⚠️ IMPORTANTE\n\n• Para saldo envia o valor no mpesa.\n• Envie apenas valores que constam na tabela\n• Transferências SIMO não são aceites";
+const PAGAMENTOS_GRUPO = [PAGAMENTO_GRUPO_1, null];
 const SESSOES = NUMEROS.map((num, i) => ({
   id: i === 0 ? '' : `s${i + 1}:`, // prefixo das chaves no Supabase ('' = sessão antiga, continua ligada)
   nome: i === 0 ? 'Número principal' : `Número ${i + 1}`,
   padrao: num,
-  pagamento: PAGAMENTOS[i] || null, // pagamento próprio (null = do Supabase)
+  pagamento: PAGAMENTOS[i] || null,
+  pagamentoGrupo: PAGAMENTOS_GRUPO[i] || null, // pagamento próprio (null = do Supabase)
   tabela: TABELAS[i] || null, // tabela de preços própria deste número (null = tabela do site)
   sock: null,
   pedirCodigo: null,
@@ -118,7 +122,7 @@ async function iniciar(S) {
         const meus = [s.user?.id, s.user?.lid].filter(Boolean).map((x) => x.split(':')[0].split('@')[0]);
         const mencionado = grupo && [...(ctx.mentionedJid || []), ctx.participant || ''].some((x) => meus.includes(String(x).split(':')[0].split('@')[0]));
         const phone = (grupo ? (m.key.participantPn || m.key.participant || '') : (m.key.senderPn || jid)).split('@')[0].split(':')[0];
-        const resposta = await responder(texto, phone, (m.pushName || '').split(' ')[0], { grupo, mencionado, botNumero: S.st.numero, tabela: S.tabela, pagamento: S.pagamento });
+        const resposta = await responder(texto, phone, (m.pushName || '').split(' ')[0], { grupo, mencionado, botNumero: S.st.numero, tabela: S.tabela, pagamento: S.pagamento, pagamentoGrupo: S.pagamentoGrupo });
         if (resposta) {
           ultimaResp.set(quem, Date.now());
           if (!grupo) await s.sendPresenceUpdate('composing', jid).catch(() => {});
