@@ -36,6 +36,21 @@ async function resolveLinks(s) {
     catch (e) { console.error('link', cod, e.message); }
   }
 }
+
+// ---------- Comprovativos M-Pesa / e-Mola → megas automáticos ----------
+export function lerComprovativo(t) {
+  const T = String(t || '').toUpperCase();
+  if (!/\b(MT|MZN)\b|\dMT/.test(T) || !/(CONFIRMAD|TRANSFERI|ENVIASTE|PAGASTE|TRANSAC|TRANSACTION|ID)/.test(T)) return null;
+  const forte = T.match(/(?:CONFIRMADO|ID DA TRANSAC[AÃ]O|ID DE TRANSAC[AÃ]O|TRANSACTION ID|REF(?:ER[EÊ]NCIA)?)\s*[:.]?\s*([A-Z0-9][A-Z0-9.]{6,24}[A-Z0-9])/);
+  if (forte && /[A-Z]/.test(forte[1]) && /\d/.test(forte[1])) return forte[1];
+  const toks = (T.match(/\b[A-Z0-9][A-Z0-9.]{6,24}[A-Z0-9]\b/g) || []).filter((w) => /[A-Z]/.test(w) && /\d/.test(w) && !/^\d+(\.\d+)*MT$/.test(w) && !/^(MZN|MT)/.test(w));
+  return toks.sort((a, b) => b.length - a.length)[0] || null;
+}
+export function numerosMsg(t) {
+  const sem = String(t || '').replace(/(para|to|p\/)\s*:?\s*(\+?258)?\s*8[2-7][\d ]{7,10}/gi, ' ');
+  return [...sem.matchAll(/(?:\+?258)?\s*(8[45]\d{7})(?!\d)/g)].map((x) => x[1]);
+}
+const pendComp = new Map(); // chat|pessoa -> { txid, ate }
 const SESSOES = NUMEROS.map((num, i) => ({
   id: i === 0 ? '' : `s${i + 1}:`, // prefixo das chaves no Supabase ('' = sessão antiga, continua ligada)
   nome: i === 0 ? 'Número principal' : `Número ${i + 1}`,
@@ -199,6 +214,31 @@ async function iniciar(S) {
           if (!grupo) { pausa.set(S.id + jid, Date.now() + 2 * 3600_000); continue; }
         }
         if (!texto.trim()) continue;
+        if (!m.key.fromMe && (!grupo || S.grupos.has(jid) || GRUPOS_ENV.includes(jid))) {
+          const chaveC = S.id + jid + '|' + (m.key.participant || jid);
+          const quemP = (grupo ? (m.key.participantPn || m.key.participant || '') : (m.key.senderPn || jid)).split('@')[0].split(':')[0];
+          const resp = (text) => s.sendMessage(jid, { text }, { quoted: m, messageId: 'BOT' + Date.now().toString(16).toUpperCase() });
+          const tratar = async (txid, num) => {
+            const r = await rpc('geator_claim', { p_txid: txid, p_chat: jid, p_numero: num, p_remetente: quemP }).catch((e) => ({ estado: 'erro', e: e.message }));
+            if (r.estado === 'confirmado') { acordarFila(); await resp(`✅ Pagamento de *${r.valor} MT* confirmado!\nA enviar *${r.mb} MB* para *${r.numero}*… aviso quando chegar.`); }
+            else if (r.estado === 'pendente') await resp(`📝 Comprovativo recebido (ID *${txid}*).\nAssim que o pagamento cair, envio os megas para *${num}* automaticamente.`);
+            else if (r.estado === 'repetido') await resp('⚠️ Este comprovativo já foi usado. Se achas que é engano, fala com o suporte.');
+            else if (r.estado === 'valor_invalido') { await resp(`O valor recebido (*${r.valor} MT*) não corresponde a nenhum pacote diário. O dono vai verificar. 🙏`); await avisarDono(S, `⚠️ Comprovativo ${txid}: ${r.valor} MT não corresponde a nenhum pacote diário. Número: ${num}. Usa !enviar se for para enviar.`); }
+            else if (r.estado === 'id_curto') await resp('Não consegui ler o ID da transação. Copia a mensagem completa do M-Pesa/e-Mola.');
+            else console.error('claim', r.e || r.estado);
+          };
+          const cp = lerComprovativo(texto);
+          const nums = numerosMsg(texto);
+          if (cp) {
+            if (nums.length) await tratar(cp, nums[nums.length - 1]);
+            else { pendComp.set(chaveC, { txid: cp, ate: Date.now() + 30 * 60_000 }); await resp('✅ Recebi o comprovativo. Agora envia o *número Vodacom* que vai receber os megas (ex: 841234567).'); }
+            continue;
+          }
+          const pc = pendComp.get(chaveC);
+          if (pc && pc.ate > Date.now() && nums.length && texto.replace(/[\s+\-]/g, '').length <= 14) {
+            pendComp.delete(chaveC); await tratar(pc.txid, nums[0]); continue;
+          }
+        }
         const sempre = /FS24-\d{8}-[A-Z0-9]{4}/i.test(texto) || /^\s*[1-5]\s*$/.test(texto);
         if (!grupo && (pausa.get(S.id + jid) || 0) > Date.now() && !sempre) continue;
         const quem = S.id + (grupo ? (m.key.participant || jid) : jid);
@@ -242,6 +282,24 @@ async function enviarFila() {
   } catch (e) { S.st.erro = e.message; }
 }
 setInterval(enviarFila, 10_000);
+
+async function avisarDono(S, text) {
+  await S.sock.sendMessage(semId(S.sock.user?.id) + '@s.whatsapp.net', { text }, { messageId: 'BOT' + Date.now().toString(16).toUpperCase() }).catch(() => {});
+}
+async function verComprovativos() {
+  const S = SESSOES.find((x) => x.st.estado === 'Conectado' && x.sock);
+  if (!S) return;
+  try {
+    const L = await rpc('geator_claims_avisar');
+    for (const c of L || []) {
+      const env = (text) => S.sock.sendMessage(c.chat, { text }, { messageId: 'BOT' + Date.now().toString(16).toUpperCase() }).catch(() => {});
+      if (c.estado === 'confirmado') { acordarFila(); await env(`✅ Pagamento de *${c.valor} MT* confirmado (ID ${c.txid})!\nA enviar *${c.mb} MB* para *${c.numero}*…`); }
+      else if (c.estado === 'valor_invalido') { await env(`O valor recebido (*${c.valor} MT*, ID ${c.txid}) não corresponde a nenhum pacote diário. O dono vai verificar. 🙏`); await avisarDono(S, `⚠️ Comprovativo ${c.txid}: ${c.valor} MT sem pacote diário. Número ${c.numero}.`); }
+      else if (c.estado === 'expirado') { await env(`⏰ Ainda não recebi o pagamento com o ID *${c.txid}*. Confirma o ID ou fala com o suporte.`); await avisarDono(S, `⏰ Comprovativo ${c.txid} (número ${c.numero}) sem SMS de pagamento há 30 min.`); }
+    }
+  } catch (e) { console.error('comprovativos', e.message); }
+}
+setInterval(verComprovativos, 20_000);
 
 // ---------- Painel simples ----------
 const app = express();
