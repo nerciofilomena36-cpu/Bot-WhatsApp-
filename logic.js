@@ -138,6 +138,13 @@ export async function responder(texto, phone, nome, op = {}) {
   }
 
   if (igual(t, MENU_PALAVRAS)) return MENU(nome);
+  if (igual(t, ['obrigado', 'obrigada', 'obrigado/a'])) return `❤️ Gostaste do nosso serviço?
+
+Ficamos muito felizes quando alguém nos recomenda. 🙏
+
+Se conheceres alguém que precisa de megas, podes indicar o NET Fast. 📶
+
+Obrigado por fazeres parte da nossa comunidade! 🤝`;
   return null; // qualquer outra palavra: o bot fica calado
 }
 
