@@ -68,15 +68,18 @@ export async function responder(texto, phone, nome, op = {}) {
   let t = norm(texto);
   const refMatch = texto.toUpperCase().match(REF_RE);
 
+  // Gatilhos criados pelo dono no WhatsApp (!gatilho palavra + resposta)
+  const limpa = t.replace(/[!?.,;:\s]+$/g, '').trim();
+  if (op.gatilhos && op.gatilhos[limpa]) return String(op.gatilhos[limpa]).replaceAll('{nome}', nome || '');
   if (op.grupo) {
     // No grupo só respondem estas palavras EXATAS (mais os gatilhos do Supabase)
     const g = await achaGatilho(t, true, nome);
     if (g) return g;
     if (refMatch || igual(t, ['paguei', 'ja paguei', 'confirmar', 'estado', 'meus pedidos']))
       return `🔒 ${nome || 'Olá'}, pagamentos e pedidos só no privado, para tua segurança.${op.botNumero ? ` Fala comigo aqui: wa.me/${op.botNumero}` : ''}`;
-    if (igual(t, ['tabela', 'posso ter megas', 'ainda ha promocao'])) return responder('1', phone, nome, { tabela: op.tabela });
+    if (igual(t, ['tabela', 'posso ter megas', 'ainda ha promocao'])) return op.tabelaGrupo || responder('1', phone, nome, { tabela: op.tabela });
     if (igual(t, ['pagamento'])) return op.pagamentoGrupo || responder('2', phone, nome, { pagamento: op.pagamento });
-    if (igual(t, ['obrigado', 'obrigada'])) return responder('obrigado', phone, nome);
+    if (igual(t, ['obrigado', 'obrigada'])) return op.obrigado || responder('obrigado', phone, nome);
     return null; // no grupo, fica calado no resto
   }
 
@@ -138,8 +141,8 @@ export async function responder(texto, phone, nome, op = {}) {
     return `👤 O suporte vai responder-te aqui em breve.\nHorário: todos os dias 08:30/09:00–22:30.\nContacto: ${tel}`;
   }
 
-  if (igual(t, MENU_PALAVRAS)) return MENU(nome);
-  if (igual(t, ['obrigado', 'obrigada', 'obrigado/a'])) return `❤️ Gostaste do nosso serviço?
+  if (igual(t, MENU_PALAVRAS)) return op.menu ? op.menu.replaceAll('{nome}', nome || '') : MENU(nome);
+  if (igual(t, ['obrigado', 'obrigada', 'obrigado/a'])) return op.obrigado ||  `❤️ Gostaste do nosso serviço?
 
 Ficamos muito felizes quando alguém nos recomenda. 🙏
 
