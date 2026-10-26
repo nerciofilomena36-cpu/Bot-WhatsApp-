@@ -127,6 +127,8 @@ async function iniciar(S) {
       if (type !== 'notify' && !m.key?.fromMe) continue; // mensagens do dono podem vir como 'append'
       try {
         const jid = m.key.remoteJid || '';
+        if (!m.message && m.messageStubType === 2 && !jid.endsWith('@broadcast')) console.log('nao decifrou', S.padrao, jid, m.messageStubParameters?.[0] || '');
+        if (S.id && jid.endsWith('@g.us') && m.message) console.log('grupo msg', S.padrao, jid, m.key.fromMe ? 'dono' : 'cliente', S.grupos.has(jid) ? 'ativo' : 'inativo');
         if (!m.message || jid === 'status@broadcast' || jid.endsWith('@newsletter')) continue;
         const grupo = jid.endsWith('@g.us');
         const msg = m.message;
