@@ -6,7 +6,7 @@ import makeWASocket, { DisconnectReason, fetchLatestBaileysVersion, Browsers } f
 import { useSupabaseAuthState } from './auth.js';
 import { rpc, configOk } from './db.js';
 import { responder, ehHumanoPedido } from './logic.js';
-import { montarGeator, novoCodigo, paraMB, acordarFila, geatorEstado, listaCelulares, alterarCelular, alterarCartao, mbTexto } from './geator.js';
+import { montarGeator, novoCodigo, paraMB, acordarFila, geatorEstado, listaCelulares, alterarCelular, alterarCartao, mbTexto, pedirSaldo } from './geator.js';
 
 const PORT = process.env.PORT || 3000;
 const PAINEL_SENHA = process.env.PAINEL_SENHA || '';
@@ -303,6 +303,17 @@ async function enviarFila() {
 }
 setInterval(enviarFila, 10_000);
 
+const gbT = (mb) => (Math.round((Number(mb) || 0) / 102.4) / 10).toString() + ' GB';
+function textoRanking(k) {
+  const pos = Number(k.posicao) || 1, n = Number(k.compras_hoje) || 1;
+  let fim;
+  if (pos === 1) fim = `Você está em 1º lugar hoje! 🏆 Continue comprando para manter o topo!`;
+  else if (pos === 2) fim = `Você está em 2º lugar. Está quase no topo! Continue comprando para alcançar o 1º lugar. O líder já acumulou ${gbT(k.lider_mb)}! 🏆`;
+  else fim = `Você está em ${pos}º lugar. Continue comprando para subir no ranking! O líder já acumulou ${gbT(k.lider_mb)}! 🏆`;
+  return `✅ Obrigado, @${k.cliente}, Você está fazendo a sua ${n}ª compra do dia!\n\n` +
+    `📱 Enviado para: ${k.numero}\n💰 Compra: ${gbT(k.mb)}\n📊 Total Hoje: ${gbT(k.hoje_mb)}\n📊 Total Sempre: ${gbT(k.sempre_mb)}\n` +
+    `🏅 Posição Dia: ${pos}º lugar (de ${k.total_dia})\n\n${fim}`;
+}
 async function avisarDono(S, text) {
   await S.sock.sendMessage(semId(S.sock.user?.id) + '@s.whatsapp.net', { text }, { messageId: 'BOT' + Date.now().toString(16).toUpperCase() }).catch(() => {});
 }
@@ -331,7 +342,11 @@ montarGeator(app, {
     const S = SESSOES.find((x) => x.st.estado === 'Conectado' && x.sock);
     if (!S) return;
     const id = () => ({ messageId: 'BOT' + Date.now().toString(16).toUpperCase() });
-    if (ok && r.avisar) await S.sock.sendMessage(r.avisar, { text: `✅ Enviámos *${r.mb} MB* para o número *${r.numero}*. Obrigado pela preferência! 🙏` }, id());
+    if (ok && r.avisar) {
+      const rk = String(r.avisar).endsWith('@g.us') ? await rpc('geator_ranking', { p_id: r.id }).catch((e) => { console.error('ranking', e.message); return null; }) : null;
+      if (rk?.cliente) await S.sock.sendMessage(r.avisar, { text: textoRanking(rk), mentions: [rk.cliente + (String(rk.cliente).length > 13 ? '@lid' : '@s.whatsapp.net')] }, id());
+      else await S.sock.sendMessage(r.avisar, { text: `✅ Enviámos *${r.mb} MB* para o número *${r.numero}*. Obrigado pela preferência! 🙏` }, id());
+    }
     if (!ok) await S.sock.sendMessage(semId(S.sock.user?.id) + '@s.whatsapp.net', { text: `⚠️ Entrega #${r.id} falhou (${r.mb} MB → ${r.numero}).\n${msg || ''}\n\nPara tentar de novo: !repetir ${r.id}` }, id());
   },
 });
@@ -363,14 +378,17 @@ ${S.grupos.has(g.id) ? '✅' : '⬜'} ${String(g.subject || g.id).replace(/[<>&"
 <h2 style="color:#FF6A00">⚡ FAST SHOP 24H — Bot WhatsApp</h2>${blocos}
 <div style="background:#fff;border-radius:12px;padding:14px;margin:14px 0;box-shadow:0 1px 4px #0002">
 <h3 style="margin:0 0 6px">📲 Celulares GEATOR (${listaCelulares().filter((c) => c.online).length} ligado(s) de ${listaCelulares().length})</h3>
-<p style="font-size:13px;color:#555">O bot envia pelo cartão com mais megas (🚀) e desconta cada entrega. Sem megas → salta para o próximo cartão ou celular.</p>
+<p style="font-size:13px;color:#555">O bot envia pelo cartão com mais megas (🚀) e desconta cada entrega. Sem megas → salta para o próximo cartão ou celular. Para atualizar os megas: carrega em 🔄 Atualizar megas e marca *100# nesse cartão.</p>
 ${listaCelulares().map((c) => `<div style="border:1px solid #eee;border-radius:8px;padding:8px;margin:6px 0">
 <b>${c.ativo ? '🚀' : c.online ? '🟢' : '🔴'} Celular ${c.ordem}</b> ${c.dispositivo ? '· ' + c.dispositivo.replace(/[<>&"]/g, '') : ''}<br>
 Estado: <b>${c.estado}</b> · Total ~<b>${mbTexto(c.total)}</b> · ✅ ${c.ok} · ❌ ${c.falhas}${c.ultimo ? `<br><small>${c.ultimo.replace(/[<>&"]/g, '')}</small>` : ''}
 ${c.cartoes.map((k) => `<form method="post" action="/cartao${q}" style="margin:6px 0;padding:6px;background:#fafafa;border-radius:6px">${h}<input type="hidden" name="c" value="${c.id}"><input type="hidden" name="k" value="${k.k}">
 ${k.ativo ? '🚀' : k.semMegas ? '🪫' : k.ligado ? '💳' : '⛔'} <b>Cartão ${k.k}</b>: ${k.ligado ? mbTexto(k.mb) : 'desligado'} ${k.semMegas ? '(sem megas)' : ''}<br>
 <input name="mb" placeholder="ex: 10GB" style="width:80px;padding:4px"> <button name="a" value="saldo" style="padding:4px">Definir megas</button>
-<button name="a" value="${k.ligado ? 'desligar' : 'ligar'}" style="padding:4px">${k.ligado ? 'Desligar' : 'Ligar'}</button></form>`).join('')}
+<button name="a" value="${k.ligado ? 'desligar' : 'ligar'}" style="padding:4px">${k.ligado ? 'Desligar' : 'Ligar'}</button>
+<br><button name="a" value="atualizar" style="padding:6px;margin-top:4px;background:#FF6A00;color:#fff;border:0;border-radius:6px">🔄 Atualizar megas</button>
+${k.esperaSms ? '<br><small style="color:#c50">⏳ À espera do SMS: marca <b>*100#</b> com o cartão ' + k.k + ' deste celular (10 min).</small>' : k.atualizado ? '<br><small>Atualizado pelo SMS às ' + new Date(k.atualizado).toLocaleTimeString('pt-PT', { timeZone: 'Africa/Maputo', hour: '2-digit', minute: '2-digit' }) + '</small>' : ''}</form>`).join('')}
+${c.ultimoSaldoSms && !c.ultimoSaldoSms.aplicado ? `<small style="color:#c50">📩 Chegou SMS de ${mbTexto(c.ultimoSaldoSms.mb)} — carrega em "Atualizar megas" no cartão certo.</small>` : ''}
 <form method="post" action="/celular${q}" style="margin-top:6px">${h}<input type="hidden" name="c" value="${c.id}">
 ${c.estado === 'Pausado' ? '<button name="a" value="reativar" style="padding:6px">Reativar</button>' : '<button name="a" value="pausar" style="padding:6px">Pausar</button>'}
 <button name="a" value="remover" style="padding:6px" onclick="return confirm('Remover este celular?')">Remover</button></form></div>`).join('') || '<p>(nenhum celular ligado ainda)</p>'}
@@ -405,6 +423,7 @@ app.post('/cartao', async (req, res) => {
   if (!autorizado(req)) return res.sendStatus(401);
   const a = String(req.body.a || '');
   if (a === 'saldo' && !/\d/.test(String(req.body.mb || ''))) return volta(req, res);
+  if (a === 'atualizar') { await pedirSaldo(String(req.body.c || ''), Number(req.body.k)).catch(() => {}); return volta(req, res); }
   await alterarCartao(String(req.body.c || ''), Number(req.body.k), a, a === 'saldo' ? paraMB(String(req.body.mb || '').replace(/\s+/g, '')) : undefined).catch(() => {});
   volta(req, res);
 });
