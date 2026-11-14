@@ -134,7 +134,7 @@ async function iniciar(S) {
       try {
         const jid = m.key.remoteJid || '';
         if (!m.message && m.messageStubType === 2 && !jid.endsWith('@broadcast')) console.log('nao decifrou', S.padrao, jid, m.messageStubParameters?.[0] || '');
-        if (S.id && jid.endsWith('@g.us') && m.message) console.log('grupo msg', S.padrao, jid, m.key.fromMe ? 'dono' : 'cliente', S.grupos.has(jid) ? 'ativo' : 'inativo');
+        if (jid.endsWith('@g.us') && (m.key.fromMe || S.grupos.has(jid))) console.log('grupo msg', type, m.message ? Object.keys(m.message).join(',') : 'SEM-CONTEUDO stub=' + m.messageStubType, S.padrao, jid, m.key.fromMe ? 'dono' : 'cliente', S.grupos.has(jid) ? 'ativo' : 'inativo');
         if (!m.message || jid === 'status@broadcast' || jid.endsWith('@newsletter')) continue;
         guardaMsg(m);
         const grupo = jid.endsWith('@g.us');
