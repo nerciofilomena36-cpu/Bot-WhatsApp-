@@ -142,7 +142,11 @@ async function iniciar(S) {
         if (m.key.fromMe && !m.key.id?.startsWith('BOT')) {
           const bruto = (msg.conversation || msg.extendedTextMessage?.text || '').trim();
           const cmd = bruto.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z]/g, '');
-          const env = async (text) => { try { const r = await s.sendMessage(jid, { text }, { messageId: 'BOT' + Date.now().toString(16).toUpperCase() }); guardaMsg(r); console.log('cmd ok', S.padrao, jid); return r; } catch (e) { console.error('cmd erro', S.padrao, jid, e.message); } };
+          const meusIds = [s.user?.id, s.user?.lid].filter(Boolean).map((x) => x.split(':')[0].split('@')[0]);
+          const proprio = !grupo && meusIds.includes(jid.split('@')[0].split(':')[0]);
+          // Conversa contigo mesmo: responde no teu número normal (não no @lid), para aparecer no celular
+          const destino = proprio ? (s.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net') : jid;
+          const env = async (text) => { try { const r = await s.sendMessage(destino, { text }, { messageId: 'BOT' + Date.now().toString(16).toUpperCase() }); guardaMsg(r); console.log('cmd ok', S.padrao, destino); return r; } catch (e) { console.error('cmd erro', S.padrao, jid, e.message); } };
           if (bruto.startsWith('!') || bruto.startsWith('.')) console.log('cmd dono', S.padrao, jid, JSON.stringify(bruto.slice(0, 25)));
           else if (!bruto) console.log('dono sem texto', S.padrao, jid, Object.keys(m.message || {}).join(','));
           if (grupo && (cmd === 'ativarbot' || cmd === 'desativarbot')) {
@@ -154,8 +158,6 @@ async function iniciar(S) {
           }
           // Comandos do dono para mudar textos SEM mexer no código:
           //   no grupo -> muda só nesse grupo;  na conversa contigo mesmo -> muda o privado deste número
-          const meusIds = [s.user?.id, s.user?.lid].filter(Boolean).map((x) => x.split(':')[0].split('@')[0]);
-          const proprio = !grupo && meusIds.includes(jid.split('@')[0].split(':')[0]);
           // ---- Entregas automáticas (app GEATOR BOT MOBILE) ----
           if (proprio && /^[!.]\s*pairapp\b/i.test(bruto)) {
             await env(`📲 Código para parear a app GEATOR BOT MOBILE:\n\n*${novoCodigo()}*\n\nNa app: Parear › escreve este código e na URL do GEATOR RENT põe:\n${URL_PUBLICA}\n\n(Válido 15 min, só 1 vez)`);
