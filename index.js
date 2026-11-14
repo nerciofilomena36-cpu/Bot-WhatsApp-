@@ -2,7 +2,11 @@
 import express from 'express';
 import pino from 'pino';
 import QRCode from 'qrcode';
-import makeWASocket, { DisconnectReason, fetchLatestBaileysVersion, Browsers } from '@whiskeysockets/baileys';
+import makeWASocket, { DisconnectReason, fetchLatestBaileysVersion, Browsers, makeCacheableSignalKeyStore, normalizeMessageContent } from '@whiskeysockets/baileys';
+// Guarda mensagens recentes (para reenviar quando o WhatsApp pede de novo) e info dos grupos
+const msgCache = new Map();
+const grpCache = new Map();
+const guardaMsg = (m) => { if (!m?.key?.id || !m.message) return; msgCache.set(m.key.id, m.message); if (msgCache.size > 3000) msgCache.delete(msgCache.keys().next().value); };
 import { useSupabaseAuthState } from './auth.js';
 import { rpc, configOk } from './db.js';
 import { responder, ehHumanoPedido } from './logic.js';
@@ -89,11 +93,13 @@ async function iniciar(S) {
   await carregaTextos(S);
   let version;
   try { version = (await fetchLatestBaileysVersion()).version; } catch {}
-  const s = makeWASocket({ auth: state, logger: log, version, browser: Browsers.ubuntu('Chrome'), markOnlineOnConnect: false, syncFullHistory: false });
+  const s = makeWASocket({ auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, log) }, logger: log, version, getMessage: async (k) => msgCache.get(k.id), cachedGroupMetadata: async (jid) => grpCache.get(jid), browser: Browsers.ubuntu('Chrome'), markOnlineOnConnect: false, syncFullHistory: false });
   S.sock = s;
   st.estado = 'A ligar';
 
   s.ev.on('creds.update', () => saveCreds().catch((e) => (st.erro = e.message)));
+  s.ev.on('groups.update', (L) => { for (const g of L) grpCache.delete(g.id); });
+  s.ev.on('group-participants.update', (u) => grpCache.delete(u.id));
   s.ev.on('connection.update', async (u) => {
     if (S.sock !== s) return;
     if (u.qr) {
@@ -108,7 +114,7 @@ async function iniciar(S) {
       st.estado = 'Conectado'; st.qr = null; st.codigo = null; st.erro = null;
       st.numero = (s.user?.id || '').split(':')[0].split('@')[0];
       console.log('WhatsApp conectado', st.numero);
-      const lerGrupos = () => s.groupFetchAllParticipating().then((r) => { S.listaGrupos = Object.values(r).map((g) => ({ id: g.id, subject: g.subject })).sort((a, b) => String(a.subject).localeCompare(String(b.subject))); }).catch(() => {});
+      const lerGrupos = () => s.groupFetchAllParticipating().then((r) => { for (const g of Object.values(r)) grpCache.set(g.id, g); S.listaGrupos = Object.values(r).map((g) => ({ id: g.id, subject: g.subject })).sort((a, b) => String(a.subject).localeCompare(String(b.subject))); }).catch(() => {});
       setTimeout(() => { lerGrupos(); resolveLinks(s); }, 3000); clearInterval(S.tGrupos); S.tGrupos = setInterval(lerGrupos, 10 * 60_000);
     }
     if (u.connection === 'close') {
@@ -130,12 +136,15 @@ async function iniciar(S) {
         if (!m.message && m.messageStubType === 2 && !jid.endsWith('@broadcast')) console.log('nao decifrou', S.padrao, jid, m.messageStubParameters?.[0] || '');
         if (S.id && jid.endsWith('@g.us') && m.message) console.log('grupo msg', S.padrao, jid, m.key.fromMe ? 'dono' : 'cliente', S.grupos.has(jid) ? 'ativo' : 'inativo');
         if (!m.message || jid === 'status@broadcast' || jid.endsWith('@newsletter')) continue;
+        guardaMsg(m);
         const grupo = jid.endsWith('@g.us');
-        const msg = m.message;
+        const msg = normalizeMessageContent(m.message) || m.message;
         if (m.key.fromMe && !m.key.id?.startsWith('BOT')) {
           const bruto = (msg.conversation || msg.extendedTextMessage?.text || '').trim();
           const cmd = bruto.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z]/g, '');
-          const env = (text) => s.sendMessage(jid, { text }, { messageId: 'BOT' + Date.now().toString(16).toUpperCase() });
+          const env = async (text) => { try { const r = await s.sendMessage(jid, { text }, { messageId: 'BOT' + Date.now().toString(16).toUpperCase() }); guardaMsg(r); console.log('cmd ok', S.padrao, jid); return r; } catch (e) { console.error('cmd erro', S.padrao, jid, e.message); } };
+          if (bruto.startsWith('!') || bruto.startsWith('.')) console.log('cmd dono', S.padrao, jid, JSON.stringify(bruto.slice(0, 25)));
+          else if (!bruto) console.log('dono sem texto', S.padrao, jid, Object.keys(m.message || {}).join(','));
           if (grupo && (cmd === 'ativarbot' || cmd === 'desativarbot')) {
             if (cmd === 'ativarbot') S.grupos.add(jid); else S.grupos.delete(jid);
             await guardaGrupos(S).catch((e) => console.error('grupos', e.message));
