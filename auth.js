@@ -7,18 +7,20 @@ const dec = (s) => JSON.parse(s, BufferJSON.reviver);
 
 // pre = '' para o número principal (chaves antigas), 's2:' para o 2º número, etc.
 export async function useSupabaseAuthState(pre = '') {
-  const got = await rpc('bot_auth_get', { p_keys: [pre + 'creds'] });
+  const got = await rpc('bot_auth_get', { p_keys: [pre + 'creds', pre + 'gen'] });
   const creds = got?.[pre + 'creds'] ? dec(got[pre + 'creds']) : initAuthCreds();
+  // "gen" separa as chaves de cada ligação: ao religar o número começa com chaves limpas
+  const kp = pre + (got?.[pre + 'gen'] || '');
 
   const state = {
     creds,
     keys: {
       get: async (type, ids) => {
-        const names = ids.map((id) => `${pre}${type}-${id}`);
+        const names = ids.map((id) => `${kp}${type}-${id}`);
         const rows = names.length ? await rpc('bot_auth_get', { p_keys: names }) : {};
         const out = {};
         for (const id of ids) {
-          const raw = rows?.[`${pre}${type}-${id}`];
+          const raw = rows?.[`${kp}${type}-${id}`];
           if (!raw) continue;
           let v = dec(raw);
           if (type === 'app-state-sync-key' && v) v = proto.Message.AppStateSyncKeyData.fromObject(v);
@@ -31,7 +33,7 @@ export async function useSupabaseAuthState(pre = '') {
         for (const type in data) {
           for (const id in data[type]) {
             const v = data[type][id];
-            batch[`${pre}${type}-${id}`] = v ? enc(v) : null;
+            batch[`${kp}${type}-${id}`] = v ? enc(v) : null;
           }
         }
         if (Object.keys(batch).length) await rpc('bot_auth_set', { p_data: batch });
@@ -40,6 +42,6 @@ export async function useSupabaseAuthState(pre = '') {
   };
   const saveCreds = () => rpc('bot_auth_set', { p_data: { [pre + 'creds']: enc(state.creds) } });
   // Só apaga a sessão DESTE número (não mexe no outro)
-  const reset = () => rpc('bot_auth_set', { p_data: { [pre + 'creds']: null } });
+  const reset = () => rpc('bot_auth_set', { p_data: { [pre + 'creds']: null, [pre + 'gen']: 'g' + Date.now().toString(36) + ':' } });
   return { state, saveCreds, reset };
 }
