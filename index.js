@@ -55,9 +55,10 @@ export function numerosMsg(t) {
   return [...sem.matchAll(/(?:\+?258)?\s*(8[45]\d{7})(?!\d)/g)].map((x) => x[1]);
 }
 const pendComp = new Map(); // chat|pessoa -> { txid, ate }
-const SESSOES = NUMEROS.map((num, i) => ({
-  id: i === 0 ? '' : `s${i + 1}:`, // prefixo das chaves no Supabase ('' = sessão antiga, continua ligada)
+const novaSessao = (num, i, extra) => ({
+  id: extra ? `x${num}:` : i === 0 ? '' : `s${i + 1}:`, // prefixo das chaves no Supabase ('' = sessão antiga, continua ligada)
   nome: i === 0 ? 'Número principal' : `Número ${i + 1}`,
+  extra: !!extra, // adicionado pelo painel
   padrao: num,
   pagamento: PAGAMENTOS[i] || null,
   pagamentoGrupo: PAGAMENTOS_GRUPO[i] || null, // pagamento próprio (null = do Supabase)
@@ -67,7 +68,10 @@ const SESSOES = NUMEROS.map((num, i) => ({
   grupos: new Set(),
   textos: {}, // textos mudados pelo dono no WhatsApp (!tabela / !pagamento)
   st: { estado: 'A iniciar', qr: null, codigo: null, numero: null, erro: null, enviados: 0, respostas: 0 },
-}));
+});
+const SESSOES = NUMEROS.map((num, i) => novaSessao(num, i, false));
+// Números adicionados no painel (guardados no Supabase)
+const guardaExtras = () => rpc('bot_auth_set', { p_data: { 'cfg-numeros-extra': JSON.stringify(SESSOES.filter((x) => x.extra).map((x) => x.padrao)) } });
 const pausa = new Map(); // sessão+jid -> até quando o bot fica calado (suporte humano / dono respondeu)
 const ultimaResp = new Map(); // anti-spam
 // Grupos: o bot só responde nos grupos ATIVADOS. Para ativar, o dono escreve !ativarbot dentro do grupo
@@ -385,10 +389,15 @@ ${st.qr ? `<p>Ou lê este QR noutro telemóvel/ecrã:</p><img src="${st.qr}" wid
 ${(S.listaGrupos || []).map((g) => `<form method="post" action="/grupo${q}" style="margin:4px 0">${h}<input type="hidden" name="s" value="${i}"><input type="hidden" name="g" value="${g.id}">
 ${S.grupos.has(g.id) ? '✅' : '⬜'} ${String(g.subject || g.id).replace(/[<>&"]/g, '')} <button style="padding:4px 8px">${S.grupos.has(g.id) ? 'Desativar' : 'Ativar'}</button></form>`).join('') || '<p>(a carregar grupos…)</p>'}
 <form method="post" action="/sair${q}" style="margin-top:12px">${h}<input type="hidden" name="s" value="${i}"><button>Desligar este número</button></form>`}
+${S.extra ? `<form method="post" action="/numero-remover${q}" style="margin-top:8px" onsubmit="return confirm('Remover este número do bot?')">${h}<input type="hidden" name="s" value="${i}"><button>🗑️ Remover número</button></form>` : ''}
 </div>`; }).join('');
   res.send(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="20">
 <body style="font-family:sans-serif;max-width:480px;margin:auto;padding:20px;background:#fff7f0">
 <h2 style="color:#FF6A00">⚡ FAST SHOP 24H — Bot WhatsApp</h2>${blocos}
+<div style="background:#fff;border-radius:12px;padding:14px;margin:14px 0;box-shadow:0 1px 4px #0002">
+<h3 style="margin:0 0 6px">➕ Adicionar número</h3>
+<form method="post" action="/numero-add${q}">${h}<input name="numero" placeholder="84xxxxxxx" style="padding:8px"> <button style="padding:8px">Adicionar</button></form>
+<p style="font-size:13px;color:#555">Depois aparece um cartão novo com o botão Gerar código.</p></div>
 <div style="background:#fff;border-radius:12px;padding:14px;margin:14px 0;box-shadow:0 1px 4px #0002">
 <h3 style="margin:0 0 6px">📲 Celulares GEATOR (${listaCelulares().filter((c) => c.online).length} ligado(s) de ${listaCelulares().length})</h3>
 <p style="font-size:13px;color:#555">O bot envia pelo cartão com mais megas (🚀) e desconta cada entrega. Sem megas → salta para o próximo cartão ou celular. Para atualizar os megas: carrega em 🔄 Atualizar megas e marca *100# nesse cartão.</p>
@@ -450,6 +459,32 @@ app.post('/geator-codigo', (req, res) => {
   codigoApp = { c: novoCodigo(), ate: Date.now() + 15 * 60_000 };
   volta(req, res);
 });
+app.post('/numero-add', async (req, res) => {
+  if (!autorizado(req)) return res.sendStatus(401);
+  let n = String(req.body.numero || '').replace(/\D/g, '');
+  if (n.length === 9) n = '258' + n;
+  if (/^2588\d{8}$/.test(n) && !SESSOES.some((x) => x.padrao === n)) {
+    const S = novaSessao(n, SESSOES.length, true);
+    SESSOES.push(S);
+    await guardaExtras().catch((e) => (S.st.erro = e.message));
+    arrancar(S);
+  }
+  volta(req, res);
+});
+app.post('/numero-remover', async (req, res) => {
+  if (!autorizado(req)) return res.sendStatus(401);
+  const i = Number(req.body.s);
+  const S = SESSOES[i];
+  if (S?.extra) {
+    S.removido = true;
+    try { await S.sock?.logout(); } catch {}
+    try { S.sock?.end(undefined); } catch {}
+    S.sock = null; clearInterval(S.tGrupos);
+    SESSOES.splice(i, 1);
+    await guardaExtras().catch(() => {});
+  }
+  volta(req, res);
+});
 app.post('/sair', async (req, res) => {
   if (!autorizado(req)) return res.sendStatus(401);
   const S = SESSOES[Number(req.body.s) || 0] || SESSOES[0];
@@ -459,12 +494,19 @@ app.post('/sair', async (req, res) => {
 
 app.listen(PORT, () => console.log('Painel na porta', PORT));
 // Liga cada número (o principal já tem sessão; os novos esperam por "Gerar código")
-for (const S of SESSOES) {
+function arrancar(S) {
   useSupabaseAuthState(S.id).then(({ state }) => {
     if (S.id === '' || state.creds.registered) return iniciar(S);
     S.st.estado = 'Por ligar — carrega em Gerar código';
   }).catch((e) => { S.st.erro = e.message; console.error(e); });
 }
+(async () => {
+  try {
+    const r = await rpc('bot_auth_get', { p_keys: ['cfg-numeros-extra'] });
+    for (const n of JSON.parse(r?.['cfg-numeros-extra'] || '[]')) if (!SESSOES.some((x) => x.padrao === n)) SESSOES.push(novaSessao(n, SESSOES.length, true));
+  } catch (e) { console.error('numeros extra', e.message); }
+  for (const S of SESSOES) arrancar(S);
+})();
 
 // Mantém o serviço acordado em hospedagens grátis (ex.: Render)
 const SELF = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL;
