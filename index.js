@@ -61,6 +61,17 @@ let enviadosTasker = []; // números já enviados (até .limpar)
 rpc('bot_auth_get', { p_keys: ['tasker-fila', 'tasker-enviados'] }).then((r) => {
   filaTasker = JSON.parse(r?.['tasker-fila'] || '[]'); enviadosTasker = JSON.parse(r?.['tasker-enviados'] || '[]');
 }).catch(() => {});
+// Nomes (pushName do WhatsApp) por número, para o Tasker pôr no SMS
+let nomesTasker = {};
+rpc('bot_auth_get', { p_keys: ['tasker-nomes'] }).then((r) => { nomesTasker = JSON.parse(r?.['tasker-nomes'] || '{}'); }).catch(() => {});
+let tNomes = null;
+function nomeAdd(x, nome) {
+  const n = numMZ(String(x || '').split('@')[0].split(':')[0]);
+  const limpo = String(nome || '').normalize('NFC').replace(/[^\p{L}\s'-]/gu, ' ').trim().split(/\s+/)[0] || '';
+  if (!n || limpo.length < 2 || nomesTasker[n] === limpo) return;
+  nomesTasker[n] = limpo.charAt(0).toUpperCase() + limpo.slice(1).toLowerCase();
+  clearTimeout(tNomes); tNomes = setTimeout(() => rpc('bot_auth_set', { p_data: { 'tasker-nomes': JSON.stringify(nomesTasker) } }).catch(() => {}), 30_000);
+}
 const guardaFila = () => rpc('bot_auth_set', { p_data: { 'tasker-fila': JSON.stringify(filaTasker), 'tasker-enviados': JSON.stringify(enviadosTasker) } }).catch(() => {});
 const numMZ = (x) => { const d = String(x || '').replace(/\D/g, '').replace(/^258(?=\d{9}$)/, ''); return /^8[2-7]\d{7}$/.test(d) ? d : null; };
 function filaAdd(nums) {
@@ -123,6 +134,9 @@ async function iniciar(S) {
   s.ev.on('creds.update', () => saveCreds().catch((e) => (st.erro = e.message)));
   s.ev.on('groups.update', (L) => { for (const g of L) grpCache.delete(g.id); });
   s.ev.on('group-participants.update', (u) => grpCache.delete(u.id));
+  const lerContactos = (L) => { for (const c of L || []) { const nome = c.notify || c.name || c.verifiedName; if (nome) for (const x of [c.phoneNumber, c.id, c.jid]) if (String(x || '').endsWith('@s.whatsapp.net')) nomeAdd(x, nome); } };
+  s.ev.on('contacts.upsert', lerContactos);
+  s.ev.on('contacts.update', lerContactos);
   s.ev.on('connection.update', async (u) => {
     if (S.sock !== s) return;
     if (u.qr) {
@@ -160,6 +174,7 @@ async function iniciar(S) {
         if (jid.endsWith('@g.us') && (m.key.fromMe || S.grupos.has(jid))) console.log('grupo msg', type, m.message ? Object.keys(m.message).join(',') : 'SEM-CONTEUDO stub=' + m.messageStubType, S.padrao, jid, m.key.fromMe ? 'dono' : 'cliente', S.grupos.has(jid) ? 'ativo' : 'inativo');
         if (!m.message || jid === 'status@broadcast' || jid.endsWith('@newsletter')) continue;
         guardaMsg(m);
+        if (!m.key.fromMe && m.pushName) nomeAdd(jid.endsWith('@g.us') ? (m.key.participantPn || m.key.participant) : (m.key.senderPn || jid), m.pushName);
         const grupo = jid.endsWith('@g.us');
         const msg = normalizeMessageContent(m.message) || m.message;
         if (m.key.fromMe && !m.key.id?.startsWith('BOT')) {
@@ -516,8 +531,13 @@ app.post('/geator-codigo', (req, res) => {
 });
 // Tasker (MEGAS 24 SMS): pede o próximo número e depois marca como enviado
 app.get('/fila/proximo-tasker', (_q, res) => res.type('text/plain').send(filaTasker[0]?.n || 'VAZIO'));
-app.post('/fila/marcar-enviado', express.json(), async (req, res) => {
-  const n = String(req.body?.number || '').replace(/\D/g, '').slice(-9);
+// Nome (primeiro nome do WhatsApp) do número ?n= ou do próximo da fila; 'Cliente' se não souber
+app.get('/fila/nome-tasker', (req, res) => { const n = numMZ(req.query?.n) || filaTasker[0]?.n; res.type('text/plain').send((n && nomesTasker[n]) || 'Cliente'); });
+// Aceita qualquer formato (JSON, texto, formulário ou ?number=) e nunca dá erro ao Tasker
+app.all('/fila/marcar-enviado', express.text({ type: () => true }), async (req, res) => {
+  const bruto = String(req.query?.number || '') + ' ' + (typeof req.body === 'string' ? req.body : JSON.stringify(req.body || ''));
+  console.log('tasker marcar', req.method, req.get('content-type') || '-', JSON.stringify(bruto.slice(0, 80)));
+  const n = (bruto.match(/8[2-7]\d{7}(?!\d)/) || [''])[0];
   const antes = filaTasker.length;
   filaTasker = filaTasker.filter((x) => x.n !== n);
   if (filaTasker.length !== antes) { if (!enviadosTasker.includes(n)) enviadosTasker.push(n); console.log('fila tasker enviado', n); await guardaFila(); }
