@@ -55,15 +55,25 @@ export function numerosMsg(t) {
   return [...sem.matchAll(/(?:\+?258)?\s*(8[45]\d{7})(?!\d)/g)].map((x) => x[1]);
 }
 const pendComp = new Map(); // chat|pessoa -> { txid, ate }
-// ---------- Fila do Tasker: números Vodacom escritos nos grupos ativados ----------
-let filaTasker = [];
-rpc('bot_auth_get', { p_keys: ['tasker-fila'] }).then((r) => { filaTasker = JSON.parse(r?.['tasker-fila'] || '[]'); }).catch(() => {});
-const guardaFila = () => rpc('bot_auth_set', { p_data: { 'tasker-fila': JSON.stringify(filaTasker) } }).catch(() => {});
-function filaAdd(nums, grupo) {
-  let mudou = false;
-  for (const n of nums) if (!filaTasker.some((x) => x.n === n)) { filaTasker.push({ n, g: grupo, t: Date.now() }); mudou = true; console.log('fila tasker +', n); }
-  if (mudou) guardaFila();
+// ---------- Fila do Tasker (MEGAS 24 SMS): números capturados dos grupos → SMS pelo Tasker ----------
+let filaTasker = []; // pendentes [{ n, t }]
+let enviadosTasker = []; // números já enviados (até .limpar)
+rpc('bot_auth_get', { p_keys: ['tasker-fila', 'tasker-enviados'] }).then((r) => {
+  filaTasker = JSON.parse(r?.['tasker-fila'] || '[]'); enviadosTasker = JSON.parse(r?.['tasker-enviados'] || '[]');
+}).catch(() => {});
+const guardaFila = () => rpc('bot_auth_set', { p_data: { 'tasker-fila': JSON.stringify(filaTasker), 'tasker-enviados': JSON.stringify(enviadosTasker) } }).catch(() => {});
+const numMZ = (x) => { const d = String(x || '').replace(/\D/g, '').replace(/^258(?=\d{9}$)/, ''); return /^8[2-7]\d{7}$/.test(d) ? d : null; };
+function filaAdd(nums) {
+  let novos = 0;
+  for (const x of nums) {
+    const n = numMZ(x);
+    if (n && !filaTasker.some((y) => y.n === n) && !enviadosTasker.includes(n)) { filaTasker.push({ n, t: Date.now() }); novos++; }
+  }
+  if (novos) guardaFila();
+  return novos;
 }
+// Números (não @lid) dos membros de um grupo
+const membrosNum = (g) => (g.participants || []).map((p) => [p.phoneNumber, p.id, p.jid].find((x) => String(x || '').endsWith('@s.whatsapp.net'))).filter(Boolean).map((x) => x.split('@')[0].split(':')[0]);
 const novaSessao = (num, i, extra) => ({
   id: extra ? `x${num}:` : i === 0 ? '' : `s${i + 1}:`, // prefixo das chaves no Supabase ('' = sessão antiga, continua ligada)
   nome: i === 0 ? 'Número principal' : `Número ${i + 1}`,
@@ -169,6 +179,38 @@ async function iniciar(S) {
             await env(cmd === 'ativarbot' ? '✅ Bot ativado neste grupo.' : '⛔ Bot desativado neste grupo.');
             continue;
           }
+          // ---- Fila do Tasker (MEGAS 24 SMS): .limpar .grupos .capturar .enviar .numero .status ----
+          if (proprio && /^\.\s*(limpar|grupos|capturar|enviar|numeros?|status)\b/i.test(bruto)) {
+            const c = bruto.slice(1).trim().split(/\s+/)[0].toLowerCase();
+            const resto = bruto.slice(1).trim().slice(c.length).trim();
+            const todos = async () => Object.values(await s.groupFetchAllParticipating()).sort((a, b) => String(a.subject).localeCompare(String(b.subject)));
+            try {
+              if (c === 'limpar') { filaTasker = []; enviadosTasker = []; await guardaFila(); await env('🧹 Banco limpo: 0 pendentes, 0 enviados.\n\nConfirma a mensagem no Tasker antes de capturar/enviar de novo.'); }
+              else if (c === 'grupos') {
+                const G = await todos();
+                await env(`👥 Grupos deste número (${G.length})\n\n` + (G.map((g, i) => `${i + 1}. ${g.subject || '(sem nome)'} · ${(g.participants || []).length} membros${g.announce ? ' · 🔒 só admins' : ''}\n${g.id}`).join('\n\n') || '(nenhum)') + '\n\n.capturar → todos\n.capturar 3 ou .capturar ID@g.us → só um grupo');
+              }
+              else if (c === 'capturar') {
+                let G = await todos();
+                if (resto) { const k = /^\d+$/.test(resto) ? G[Number(resto) - 1] : G.find((g) => g.id === resto); G = k ? [k] : []; }
+                if (!G.length) { await env('Não encontrei esse grupo. Usa .grupos para ver a lista.'); continue; }
+                const meus = [s.user?.id, s.user?.lid].filter(Boolean).map((x) => x.split(':')[0].split('@')[0]);
+                let vistos = 0, semNum = 0; const nums = [];
+                for (const g of G) { vistos += (g.participants || []).length; const L = membrosNum(g).filter((n) => !meus.includes(n)); semNum += (g.participants || []).length - L.length; nums.push(...L); }
+                const novos = filaAdd(nums);
+                await env(`📥 Captura feita em ${G.length} grupo(s)\n\nMembros: ${vistos}\nNovos na fila: ${novos}\nPendentes: ${filaTasker.length}` + (semNum ? `\n(${semNum} sem número visível ou repetidos/estrangeiros ignorados)` : ''));
+              }
+              else if (c === 'enviar') {
+                const novos = filaAdd(resto.split(/[\s,;]+/));
+                await env(novos ? `✅ ${novos} número(s) na fila para enviar. Pendentes: ${filaTasker.length}` : 'Escreve assim:\n.enviar\n258841234567\n258851234567\n\n(números novos; os repetidos ou já enviados são ignorados)');
+              }
+              else if (c.startsWith('numero')) {
+                await env(`📋 Números pendentes (${filaTasker.length})\n\n` + (filaTasker.slice(0, 500).map((x) => '258' + x.n).join('\n') || '(nenhum)') + (filaTasker.length > 500 ? `\n… e mais ${filaTasker.length - 500}` : ''));
+              }
+              else if (c === 'status') await env(`📊 Estado do envio\n\n✅ Enviados: ${enviadosTasker.length}\n⏳ Pendentes: ${filaTasker.length}`);
+            } catch (e) { await env('Erro: ' + e.message); }
+            continue;
+          }
           // Comandos do dono para mudar textos SEM mexer no código:
           //   no grupo -> muda só nesse grupo;  na conversa contigo mesmo -> muda o privado deste número
           // ---- Entregas automáticas (app GEATOR BOT MOBILE) ----
@@ -247,7 +289,7 @@ async function iniciar(S) {
             continue;
           }
           if ((grupo || proprio) && cmd === 'comandos') {
-            await env('⚙️ Comandos do dono\n\n!tabela + texto → muda a tabela\n!pagamento + texto → muda o pagamento\n!menu + texto → muda a resposta ao oi/olá\n!obrigado + texto → muda a resposta ao obrigado\n(!tabela apagar, !pagamento apagar… volta ao original)\n\n!gatilho palavra + resposta (linha de baixo) → cria palavra nova\n!gatilho palavra apagar → apaga\n!listar → mostra o que mudaste\n!ativarbot / !desativarbot → liga/desliga o bot no grupo\n\n📲 Entregas automáticas (app GEATOR)\n!pairapp → código para ligar a app\n!enviar 841234567 1GB → manda megas\n!entregas → ver últimas\n!repetir 12 → tenta de novo a #12\n!celulares → ver celulares e megas de cada cartão\n!saldo 1 2 10GB → define os megas do cartão 2 do celular 1\n!cartao 1 2 desligar / ligar\n!celular 1 ativar / pausar / remover\n\nNo grupo muda só esse grupo. Na conversa contigo mesmo muda o privado.');
+            await env('⚙️ Comandos do dono\n\n!tabela + texto → muda a tabela\n!pagamento + texto → muda o pagamento\n!menu + texto → muda a resposta ao oi/olá\n!obrigado + texto → muda a resposta ao obrigado\n(!tabela apagar, !pagamento apagar… volta ao original)\n\n!gatilho palavra + resposta (linha de baixo) → cria palavra nova\n!gatilho palavra apagar → apaga\n!listar → mostra o que mudaste\n!ativarbot / !desativarbot → liga/desliga o bot no grupo\n\n📲 Entregas automáticas (app GEATOR)\n!pairapp → código para ligar a app\n!enviar 841234567 1GB → manda megas\n!entregas → ver últimas\n!repetir 12 → tenta de novo a #12\n!celulares → ver celulares e megas de cada cartão\n!saldo 1 2 10GB → define os megas do cartão 2 do celular 1\n!cartao 1 2 desligar / ligar\n!celular 1 ativar / pausar / remover\n\n📤 SMS pelo Tasker (na conversa contigo mesmo)\n.grupos → lista os grupos\n.capturar → números de todos os grupos\n.capturar 3 → só o grupo 3 (ou ID@g.us)\n.enviar + números (um por linha)\n.numero → ver números na fila\n.status → enviados e pendentes\n.limpar → limpa tudo (usa antes de novo envio)\n\nNo grupo muda só esse grupo. Na conversa contigo mesmo muda o privado.');
             continue;
           }
         }
@@ -275,7 +317,6 @@ async function iniciar(S) {
           };
           const cp = lerComprovativo(texto);
           const nums = numerosMsg(texto);
-          if (grupo && nums.length) filaAdd(nums, jid);
           if (cp) {
             if (nums.length) await tratar(cp, nums[nums.length - 1]);
             else { pendComp.set(chaveC, { txid: cp, ate: Date.now() + 30 * 60_000 }); await resp('✅ Recebi o comprovativo. Agora envia o *número Vodacom* que vai receber os megas (ex: 841234567).'); }
@@ -405,7 +446,7 @@ ${S.extra ? `<form method="post" action="/numero-remover${q}" style="margin-top:
 <body style="font-family:sans-serif;max-width:480px;margin:auto;padding:20px;background:#fff7f0">
 <h2 style="color:#FF6A00">⚡ FAST SHOP 24H — Bot WhatsApp</h2>${blocos}
 <div style="background:#fff;border-radius:12px;padding:14px;margin:14px 0;box-shadow:0 1px 4px #0002">
-<h3 style="margin:0 0 6px">📤 Fila do Tasker: ${filaTasker.length} número(s)</h3>
+<h3 style="margin:0 0 6px">📤 Fila do Tasker: ${filaTasker.length} pendente(s) · ${enviadosTasker.length} enviado(s)</h3>
 <p style="font-size:13px;color:#555">${filaTasker.slice(0, 10).map((x) => x.n).join(', ') || 'vazia'}</p>
 <form method="post" action="/fila-limpar${q}" onsubmit="return confirm('Limpar a fila?')">${h}<button style="padding:6px">Limpar fila</button></form></div>
 <div style="background:#fff;border-radius:12px;padding:14px;margin:14px 0;box-shadow:0 1px 4px #0002">
@@ -479,12 +520,12 @@ app.post('/fila/marcar-enviado', express.json(), async (req, res) => {
   const n = String(req.body?.number || '').replace(/\D/g, '').slice(-9);
   const antes = filaTasker.length;
   filaTasker = filaTasker.filter((x) => x.n !== n);
-  if (filaTasker.length !== antes) { console.log('fila tasker enviado', n); await guardaFila(); }
+  if (filaTasker.length !== antes) { if (!enviadosTasker.includes(n)) enviadosTasker.push(n); console.log('fila tasker enviado', n); await guardaFila(); }
   res.json({ ok: true, restantes: filaTasker.length });
 });
 app.post('/fila-limpar', async (req, res) => {
   if (!autorizado(req)) return res.sendStatus(401);
-  filaTasker = []; await guardaFila(); volta(req, res);
+  filaTasker = []; enviadosTasker = []; await guardaFila(); volta(req, res);
 });
 app.post('/numero-add', async (req, res) => {
   if (!autorizado(req)) return res.sendStatus(401);
