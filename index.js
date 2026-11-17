@@ -55,6 +55,15 @@ export function numerosMsg(t) {
   return [...sem.matchAll(/(?:\+?258)?\s*(8[45]\d{7})(?!\d)/g)].map((x) => x[1]);
 }
 const pendComp = new Map(); // chat|pessoa -> { txid, ate }
+// ---------- Fila do Tasker: números Vodacom escritos nos grupos ativados ----------
+let filaTasker = [];
+rpc('bot_auth_get', { p_keys: ['tasker-fila'] }).then((r) => { filaTasker = JSON.parse(r?.['tasker-fila'] || '[]'); }).catch(() => {});
+const guardaFila = () => rpc('bot_auth_set', { p_data: { 'tasker-fila': JSON.stringify(filaTasker) } }).catch(() => {});
+function filaAdd(nums, grupo) {
+  let mudou = false;
+  for (const n of nums) if (!filaTasker.some((x) => x.n === n)) { filaTasker.push({ n, g: grupo, t: Date.now() }); mudou = true; console.log('fila tasker +', n); }
+  if (mudou) guardaFila();
+}
 const novaSessao = (num, i, extra) => ({
   id: extra ? `x${num}:` : i === 0 ? '' : `s${i + 1}:`, // prefixo das chaves no Supabase ('' = sessão antiga, continua ligada)
   nome: i === 0 ? 'Número principal' : `Número ${i + 1}`,
@@ -266,6 +275,7 @@ async function iniciar(S) {
           };
           const cp = lerComprovativo(texto);
           const nums = numerosMsg(texto);
+          if (grupo && nums.length) filaAdd(nums, jid);
           if (cp) {
             if (nums.length) await tratar(cp, nums[nums.length - 1]);
             else { pendComp.set(chaveC, { txid: cp, ate: Date.now() + 30 * 60_000 }); await resp('✅ Recebi o comprovativo. Agora envia o *número Vodacom* que vai receber os megas (ex: 841234567).'); }
@@ -395,6 +405,10 @@ ${S.extra ? `<form method="post" action="/numero-remover${q}" style="margin-top:
 <body style="font-family:sans-serif;max-width:480px;margin:auto;padding:20px;background:#fff7f0">
 <h2 style="color:#FF6A00">⚡ FAST SHOP 24H — Bot WhatsApp</h2>${blocos}
 <div style="background:#fff;border-radius:12px;padding:14px;margin:14px 0;box-shadow:0 1px 4px #0002">
+<h3 style="margin:0 0 6px">📤 Fila do Tasker: ${filaTasker.length} número(s)</h3>
+<p style="font-size:13px;color:#555">${filaTasker.slice(0, 10).map((x) => x.n).join(', ') || 'vazia'}</p>
+<form method="post" action="/fila-limpar${q}" onsubmit="return confirm('Limpar a fila?')">${h}<button style="padding:6px">Limpar fila</button></form></div>
+<div style="background:#fff;border-radius:12px;padding:14px;margin:14px 0;box-shadow:0 1px 4px #0002">
 <h3 style="margin:0 0 6px">➕ Adicionar número</h3>
 <form method="post" action="/numero-add${q}">${h}<input name="numero" placeholder="84xxxxxxx" style="padding:8px"> <button style="padding:8px">Adicionar</button></form>
 <p style="font-size:13px;color:#555">Depois aparece um cartão novo com o botão Gerar código.</p></div>
@@ -458,6 +472,19 @@ app.post('/geator-codigo', (req, res) => {
   if (!autorizado(req)) return res.sendStatus(401);
   codigoApp = { c: novoCodigo(), ate: Date.now() + 15 * 60_000 };
   volta(req, res);
+});
+// Tasker (MEGAS 24 SMS): pede o próximo número e depois marca como enviado
+app.get('/fila/proximo-tasker', (_q, res) => res.type('text/plain').send(filaTasker[0]?.n || 'VAZIO'));
+app.post('/fila/marcar-enviado', express.json(), async (req, res) => {
+  const n = String(req.body?.number || '').replace(/\D/g, '').slice(-9);
+  const antes = filaTasker.length;
+  filaTasker = filaTasker.filter((x) => x.n !== n);
+  if (filaTasker.length !== antes) { console.log('fila tasker enviado', n); await guardaFila(); }
+  res.json({ ok: true, restantes: filaTasker.length });
+});
+app.post('/fila-limpar', async (req, res) => {
+  if (!autorizado(req)) return res.sendStatus(401);
+  filaTasker = []; await guardaFila(); volta(req, res);
 });
 app.post('/numero-add', async (req, res) => {
   if (!autorizado(req)) return res.sendStatus(401);
