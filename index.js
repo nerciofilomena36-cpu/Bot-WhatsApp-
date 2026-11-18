@@ -409,7 +409,7 @@ async function verComprovativos() {
       const env = (text) => S.sock.sendMessage(c.chat, { text }, { messageId: 'BOT' + Date.now().toString(16).toUpperCase() }).catch(() => {});
       if (c.estado === 'confirmado') { acordarFila(); await env(`✅ Pagamento de *${c.valor} MT* confirmado (ID ${c.txid})!\nA enviar *${c.mb} MB* para *${c.numero}*…`); }
       else if (c.estado === 'valor_invalido') { await env(`O valor recebido (*${c.valor} MT*, ID ${c.txid}) não corresponde a nenhum pacote diário. O dono vai verificar. 🙏`); await avisarDono(S, `⚠️ Comprovativo ${c.txid}: ${c.valor} MT sem pacote diário. Número ${c.numero}.`); }
-      else if (c.estado === 'expirado') { await env(`⏰ Ainda não recebi o pagamento com o ID *${c.txid}*. Confirma o ID ou fala com o suporte.`); await avisarDono(S, `⏰ Comprovativo ${c.txid} (número ${c.numero}) sem SMS de pagamento há 30 min.`); }
+      else if (c.estado === 'expirado') { await env(`⏰ Ainda não recebi o pagamento com o ID *${c.txid}*. Confirma o ID ou fala com o suporte.`); }
     }
   } catch (e) { console.error('comprovativos', e.message); }
 }
