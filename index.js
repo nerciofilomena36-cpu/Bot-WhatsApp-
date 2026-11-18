@@ -195,7 +195,7 @@ async function iniciar(S) {
             continue;
           }
           // ---- Fila do Tasker (MEGAS 24 SMS): .limpar .grupos .capturar .enviar .numero .status ----
-          if (proprio && /^\.\s*(limpar|grupos|capturar|enviar|numeros?|status)\b/i.test(bruto)) {
+          if (proprio && /^\.\s*(limpar|grupos|capturar|enviar|numeros?|status|idgrupo)\b/i.test(bruto)) {
             const c = bruto.slice(1).trim().split(/\s+/)[0].toLowerCase();
             const resto = bruto.slice(1).trim().slice(c.length).trim();
             const todos = async () => Object.values(await s.groupFetchAllParticipating()).sort((a, b) => String(a.subject).localeCompare(String(b.subject)));
@@ -204,6 +204,17 @@ async function iniciar(S) {
               else if (c === 'grupos') {
                 const G = await todos();
                 await env(`👥 Grupos deste número (${G.length})\n\n` + (G.map((g, i) => `${i + 1}. ${g.subject || '(sem nome)'} · ${(g.participants || []).length} membros${g.announce ? ' · 🔒 só admins' : ''}\n${g.id}`).join('\n\n') || '(nenhum)') + '\n\n.capturar → todos\n.capturar 3 ou .capturar ID@g.us → só um grupo');
+              }
+              else if (c === 'idgrupo') {
+                const codigos = [...resto.matchAll(/chat\.whatsapp\.com\/(?:invite\/)?([A-Za-z0-9]{10,})/g)].map((x) => x[1]);
+                if (!codigos.length) { await env('Manda assim:\n.idgrupo https://chat.whatsapp.com/XXXX\n(podes pôr vários links, um por linha)'); continue; }
+                const out = [];
+                for (const k of codigos.slice(0, 20)) {
+                  try { const g = await s.groupGetInviteInfo(k); out.push(`✅ ${g.subject || '(sem nome)'} · ${g.size || (g.participants || []).length || '?'} membros\n${g.id}`); }
+                  catch (e) { out.push(`❌ ${k}: link inválido ou expirado`); }
+                  await new Promise((r) => setTimeout(r, 1500));
+                }
+                await env('🔎 ID dos grupos\n\n' + out.join('\n\n'));
               }
               else if (c === 'capturar') {
                 let G = await todos();
@@ -304,7 +315,7 @@ async function iniciar(S) {
             continue;
           }
           if ((grupo || proprio) && cmd === 'comandos') {
-            await env('⚙️ Comandos do dono\n\n!tabela + texto → muda a tabela\n!pagamento + texto → muda o pagamento\n!menu + texto → muda a resposta ao oi/olá\n!obrigado + texto → muda a resposta ao obrigado\n(!tabela apagar, !pagamento apagar… volta ao original)\n\n!gatilho palavra + resposta (linha de baixo) → cria palavra nova\n!gatilho palavra apagar → apaga\n!listar → mostra o que mudaste\n!ativarbot / !desativarbot → liga/desliga o bot no grupo\n\n📲 Entregas automáticas (app GEATOR)\n!pairapp → código para ligar a app\n!enviar 841234567 1GB → manda megas\n!entregas → ver últimas\n!repetir 12 → tenta de novo a #12\n!celulares → ver celulares e megas de cada cartão\n!saldo 1 2 10GB → define os megas do cartão 2 do celular 1\n!cartao 1 2 desligar / ligar\n!celular 1 ativar / pausar / remover\n\n📤 SMS pelo Tasker (na conversa contigo mesmo)\n.grupos → lista os grupos\n.capturar → números de todos os grupos\n.capturar 3 → só o grupo 3 (ou ID@g.us)\n.enviar + números (um por linha)\n.numero → ver números na fila\n.status → enviados e pendentes\n.limpar → limpa tudo (usa antes de novo envio)\n\nNo grupo muda só esse grupo. Na conversa contigo mesmo muda o privado.');
+            await env('⚙️ Comandos do dono\n\n!tabela + texto → muda a tabela\n!pagamento + texto → muda o pagamento\n!menu + texto → muda a resposta ao oi/olá\n!obrigado + texto → muda a resposta ao obrigado\n(!tabela apagar, !pagamento apagar… volta ao original)\n\n!gatilho palavra + resposta (linha de baixo) → cria palavra nova\n!gatilho palavra apagar → apaga\n!listar → mostra o que mudaste\n!ativarbot / !desativarbot → liga/desliga o bot no grupo\n\n📲 Entregas automáticas (app GEATOR)\n!pairapp → código para ligar a app\n!enviar 841234567 1GB → manda megas\n!entregas → ver últimas\n!repetir 12 → tenta de novo a #12\n!celulares → ver celulares e megas de cada cartão\n!saldo 1 2 10GB → define os megas do cartão 2 do celular 1\n!cartao 1 2 desligar / ligar\n!celular 1 ativar / pausar / remover\n\n📤 SMS pelo Tasker (na conversa contigo mesmo)\n.grupos → lista os grupos\n.capturar → números de todos os grupos\n.capturar 3 → só o grupo 3 (ou ID@g.us)\n.enviar + números (um por linha)\n.numero → ver números na fila\n.status → enviados e pendentes\n.limpar → limpa tudo (usa antes de novo envio)\n.idgrupo + link → ID @g.us, nome e membros\n\nNo grupo muda só esse grupo. Na conversa contigo mesmo muda o privado.');
             continue;
           }
         }
