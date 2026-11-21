@@ -169,11 +169,17 @@ async function iniciar(S) {
 
   s.ev.on('messages.upsert', async ({ messages, type }) => {
     for (const m of messages) {
+      // O dono a escrever no grupo pelo telemóvel às vezes chega com fromMe=false (endereço @lid). Corrige aqui.
+      try {
+        const meus0 = [s.user?.id, s.user?.lid].filter(Boolean).map((x) => String(x).split(':')[0].split('@')[0]);
+        const part0 = [m.key?.participant, m.key?.participantPn, m.key?.participantAlt, m.participant].filter(Boolean).map((x) => String(x).split(':')[0].split('@')[0]);
+        if (m.key && !m.key.fromMe && (m.key.remoteJid || '').endsWith('@g.us') && part0.some((x) => meus0.includes(x))) { m.key.fromMe = true; m.key.donoCorrigido = true; }
+      } catch {}
       if (type !== 'notify' && !m.key?.fromMe) continue; // mensagens do dono podem vir como 'append'
       try {
         const jid = m.key.remoteJid || '';
         if (!m.message && m.messageStubType === 2 && !jid.endsWith('@broadcast')) console.log('nao decifrou', S.padrao, jid, m.messageStubParameters?.[0] || '');
-        if (jid.endsWith('@g.us') && (m.key.fromMe || S.grupos.has(jid))) console.log('grupo msg', type, m.message ? Object.keys(m.message).join(',') : 'SEM-CONTEUDO stub=' + m.messageStubType, S.padrao, jid, m.key.fromMe ? 'dono' : 'cliente', S.grupos.has(jid) ? 'ativo' : 'inativo');
+        if (jid.endsWith('@g.us') && (m.key.fromMe || S.grupos.has(jid))) console.log('grupo msg', type, m.message ? Object.keys(m.message).join(',') : 'SEM-CONTEUDO stub=' + m.messageStubType, S.padrao, jid, m.key.fromMe ? 'dono' : 'cliente', S.grupos.has(jid) ? 'ativo' : 'inativo', 'de=' + String(m.key.participantPn || m.key.participant || '').split('@')[0].split(':')[0].slice(-4) + (m.key.donoCorrigido ? ' corrigido' : '') + (m.key.id?.startsWith('BOT') ? ' bot' : ''));
         if (!m.message || jid === 'status@broadcast' || jid.endsWith('@newsletter')) continue;
         guardaMsg(m);
         if (!m.key.fromMe && m.pushName) nomeAdd(jid.endsWith('@g.us') ? (m.key.participantPn || m.key.participant) : (m.key.senderPn || jid), m.pushName);
