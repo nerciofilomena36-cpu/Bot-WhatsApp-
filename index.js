@@ -7,7 +7,7 @@ import makeWASocket, { DisconnectReason, fetchLatestBaileysVersion, Browsers, ma
 const msgCache = new Map();
 const grpCache = new Map();
 const guardaMsg = (m) => { if (!m?.key?.id || !m.message) return; msgCache.set(m.key.id, m.message); if (msgCache.size > 3000) msgCache.delete(msgCache.keys().next().value); };
-import { useSupabaseAuthState } from './auth.js';
+import { useSupabaseAuthState, gravarTudo } from './auth.js';
 import { rpc, configOk } from './db.js';
 import { responder, ehHumanoPedido } from './logic.js';
 import { montarGeator, novoCodigo, paraMB, acordarFila, geatorEstado, listaCelulares, alterarCelular, alterarCartao, mbTexto, pedirSaldo } from './geator.js';
@@ -156,6 +156,8 @@ async function iniciar(S) {
     }
     if (u.connection === 'close') {
       const code = u.lastDisconnect?.error?.output?.statusCode;
+      console.log('WhatsApp caiu', S.padrao, code, String(u.lastDisconnect?.error?.message || '').slice(0, 80));
+      if (code === 440) { st.estado = 'Outra ligação abriu — volto a tentar em 1 min'; setTimeout(() => { if (S.sock === s && !aSair) iniciar(S).catch((e) => (st.erro = e.message)); }, 60000); return; }
       if (code === DisconnectReason.loggedOut) {
         st.estado = 'Sessão terminada — liga de novo'; st.numero = null;
         await reset().catch(() => {});
@@ -592,6 +594,14 @@ app.post('/sair', async (req, res) => {
 });
 
 app.listen(PORT, () => console.log('Painel na porta', PORT));
+// Ao reiniciar/deploy: grava as chaves e fecha o WhatsApp ANTES do novo servidor ligar (evita 2 ligações ao mesmo tempo)
+let aSair = false;
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, async () => {
+  if (aSair) return; aSair = true; console.log('a desligar', sig);
+  for (const S of SESSOES) { const x = S.sock; S.sock = null; try { x?.end(undefined); } catch {} }
+  try { await Promise.race([gravarTudo(), new Promise((r) => setTimeout(r, 8000))]); } catch {}
+  process.exit(0);
+});
 // Liga cada número (o principal já tem sessão; os novos esperam por "Gerar código")
 function arrancar(S) {
   useSupabaseAuthState(S.id).then(({ state }) => {
